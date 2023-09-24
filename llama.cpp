@@ -850,9 +850,14 @@ struct llama_mmap {
         int flags = MAP_SHARED;
         // prefetch/readahead impairs performance on NUMA systems
         if (numa) { prefetch = 0; }
+
+#ifdef GGML_USE_MPI
+        prefetch = 0;
+#endif
 #ifdef __linux__
         if (prefetch) { flags |= MAP_POPULATE; }
 #endif
+
         addr = mmap(NULL, file->size, PROT_READ, flags, fd, 0);
         if (addr == MAP_FAILED) {
             throw std::runtime_error(format("mmap failed: %s", strerror(errno)));
@@ -8437,10 +8442,6 @@ void llama_backend_init(bool numa) {
     if (numa) {
         ggml_numa_init();
     }
-
-#ifdef GGML_USE_MPI
-    ggml_mpi_backend_init();
-#endif
 }
 
 void llama_backend_free(void) {
@@ -8676,18 +8677,19 @@ struct llama_context * llama_new_context_with_model(
 #ifdef GGML_USE_MPI
     ctx->ctx_mpi = ggml_mpi_init();
 
-    if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
-        // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
-        // TODO: needs fix after #3228
-        GGML_ASSERT(false && "not implemented");
-        //const std::vector<llama_token> tmp(ctx->model.hparams.n_ctx, llama_token_bos(ctx));
-        //while (!llama_eval(ctx, tmp.data(), tmp.size(), 0, 0)) {};
-        llama_backend_free();
-        exit(1);
-    }
 #endif
 
     return ctx;
+}
+
+void llama_split_layers_weighted(struct llama_context * ctx, std::vector<float> device_weights) {
+#ifdef GGML_USE_MPI
+    if (ggml_mpi_rank(ctx->ctx_mpi) == 0 && ggml_mpi_size(ctx->ctx_mpi) != device_weights.size()) {
+        GGML_ASSERT(false && "Must have same number of split percentages as devices");
+    }
+    uint16_t** ranges = ggml_mpi_split_range(ctx->ctx_mpi, 0, ctx->model.hparams.n_layer - 1, device_weights.data());
+    ggml_mpi_scatter_layers(ctx->ctx_mpi, ranges);
+#endif
 }
 
 void llama_free(struct llama_context * ctx) {
@@ -9375,6 +9377,18 @@ int llama_eval(
                      int32_t   n_tokens,
                          int   n_past) {
     llama_kv_cache_seq_rm(ctx->kv_self, -1, n_past, -1);
+
+#ifdef GGML_USE_MPI
+    if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
+        // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
+        const std::vector<llama_token> tmp(ctx->model.hparams.n_ctx, llama_token_bos(ctx));
+        while (llama_decode_internal(*ctx, tmp.data(), nullptr, tmp.size(), 0, n_threads, nullptr)) {};
+        llama_backend_free();
+        exit(1);
+    }
+#endif
+
+
 
     const int ret = llama_decode_internal(*ctx, llama_batch_get_one(tokens, n_tokens, n_past, 0));
     if (ret < 0) {

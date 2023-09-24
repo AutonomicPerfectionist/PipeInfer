@@ -540,6 +540,23 @@ bool gpt_params_parse_ex(int argc, char ** argv, gpt_params & params) {
 #else
             fprintf(stderr, "warning: llama.cpp was compiled without cuBLAS. It is not possible to set a main GPU.\n");
 #endif
+        } else if (arg == "--mpi-layer-split") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            std::string arg_next = argv[i];
+
+            // split string by , and /
+            const std::regex regex{R"([,/]+)"};
+            std::sregex_token_iterator it{arg_next.begin(), arg_next.end(), regex, -1};
+            std::vector<std::string> split_arg{it, {}};
+            params.mpi_layer_split.resize(split_arg.size());
+            for (size_t i = 0; i < split_arg.size(); ++i) {
+                params.mpi_layer_split[i] = std::stof(split_arg[i]);
+            }
+
+
         } else if (arg == "--tensor-split" || arg == "-ts") {
             if (++i >= argc) {
                 invalid_param = true;

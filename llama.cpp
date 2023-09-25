@@ -8442,6 +8442,10 @@ void llama_backend_init(bool numa) {
     if (numa) {
         ggml_numa_init();
     }
+
+#ifdef GGML_USE_MPI
+    ggml_mpi_backend_init();
+#endif
 }
 
 void llama_backend_free(void) {

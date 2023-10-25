@@ -9385,8 +9385,9 @@ int llama_eval(
 #ifdef GGML_USE_MPI
     if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
         // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
-        const std::vector<llama_token> tmp(ctx->model.hparams.n_ctx, llama_token_bos(ctx));
-        while (llama_decode_internal(*ctx, tmp.data(), nullptr, tmp.size(), 0, n_threads, nullptr)) {};
+        const int n_ctx = llama_n_ctx(ctx);
+        std::vector<llama_token> tmp(n_ctx, llama_token_bos(ctx));
+        while (llama_decode_internal(*ctx, llama_batch_get_one(tmp.data(), tmp.size(), n_past, 0))) {};
         llama_backend_free();
         exit(1);
     }

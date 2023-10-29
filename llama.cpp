@@ -5423,8 +5423,7 @@ static struct ggml_cgraph * llama_build_graph(
 static int llama_decode_internal(
          llama_context & lctx,
            llama_batch   batch) {
-    const uint32_t n_tokens = batch.n_tokens;
-
+    uint32_t n_tokens = batch.n_tokens;
     if (n_tokens == 0) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0", __func__);
         return -1;
@@ -5442,12 +5441,6 @@ static int llama_decode_internal(
     GGML_ASSERT((!batch.token && batch.embd) || (batch.token && !batch.embd)); // NOLINT
 
     const int64_t t_start_us = ggml_time_us();
-
-#ifdef GGML_USE_MPI
-    // TODO: needs fix after #3228
-    GGML_ASSERT(false && "not implemented");
-    //ggml_mpi_eval_init(lctx.ctx_mpi, &n_tokens, &n_past, &n_threads);
-#endif
 
     GGML_ASSERT(n_threads > 0);
 
@@ -5496,6 +5489,11 @@ static int llama_decode_internal(
         kv_self.head = 0;
     }
 
+#ifdef GGML_USE_MPI
+    // TODO: needs fix after #3228
+    ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits));
+    n_tokens = batch.n_tokens;
+#endif
     if (!llama_kv_cache_find_slot(kv_self, batch)) {
         return 1;
     }
@@ -5509,7 +5507,6 @@ static int llama_decode_internal(
     //printf("kv_self.n = %5d, kv_self.used = %5d, kv_self.head = %5d\n", kv_self.n, kv_self.used, kv_self.head);
 
     ggml_allocr_reset(lctx.alloc);
-
     ggml_cgraph * gf = llama_build_graph(lctx, batch);
 
     ggml_allocr_alloc_graph(lctx.alloc, gf);
@@ -5569,7 +5566,6 @@ static int llama_decode_internal(
     if (ggml_cpu_has_cublas() && full_offload_supported && fully_offloaded) {
         n_threads = 1;
     }
-
 #if GGML_USE_MPI
     const int64_t n_layer = hparams.n_layer;
     ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf, n_layer);
@@ -9380,21 +9376,24 @@ int llama_eval(
                  llama_token * tokens,
                      int32_t   n_tokens,
                          int   n_past) {
-    llama_kv_cache_seq_rm(ctx->kv_self, -1, n_past, -1);
+
 
 #ifdef GGML_USE_MPI
     if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
         // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
         const int n_ctx = llama_n_ctx(ctx);
         std::vector<llama_token> tmp(n_ctx, llama_token_bos(ctx));
-        while (llama_decode_internal(*ctx, llama_batch_get_one(tmp.data(), tmp.size(), n_past, 0))) {};
+        do {
+            //ggml_mpi_synch_int(ctx->ctx_mpi, &n_past);
+            llama_kv_cache_tokens_rm(ctx->kv_self, n_past, -1);
+        } while (llama_decode_internal(*ctx, llama_batch_get_one(tmp.data(), tmp.size(), n_past, 0)) >= 0);
         llama_backend_free();
         exit(1);
     }
 #endif
 
 
-
+    llama_kv_cache_seq_rm(ctx->kv_self, -1, n_past, -1);
     const int ret = llama_decode_internal(*ctx, llama_batch_get_one(tokens, n_tokens, n_past, 0));
     if (ret < 0) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
@@ -9481,6 +9480,17 @@ void llama_batch_free(struct llama_batch batch) {
 int llama_decode(
         struct llama_context * ctx,
           struct llama_batch   batch) {
+
+#ifdef GGML_USE_MPI
+    if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
+        // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
+        const int n_ctx = llama_n_ctx(ctx);
+        std::vector<llama_token> tmp(n_ctx, llama_token_bos(ctx));
+        while (llama_decode_internal(*ctx, batch) >= 0){};
+        llama_backend_free();
+        exit(1);
+    }
+#endif
     const int ret = llama_decode_internal(*ctx, batch);
     if (ret < 0) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);

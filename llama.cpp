@@ -9382,10 +9382,10 @@ int llama_eval(
     if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
         // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
         const int n_ctx = llama_n_ctx(ctx);
-        std::vector<llama_token> tmp(n_ctx, llama_token_bos(ctx));
+        std::vector<llama_token> tmp(n_ctx, llama_token_bos(&(ctx->model)));
         do {
             //ggml_mpi_synch_int(ctx->ctx_mpi, &n_past);
-            llama_kv_cache_tokens_rm(ctx->kv_self, n_past, -1);
+            llama_kv_cache_seq_rm(ctx->kv_self, -1, n_past, -1);
         } while (llama_decode_internal(*ctx, llama_batch_get_one(tmp.data(), tmp.size(), n_past, 0)) >= 0);
         llama_backend_free();
         exit(1);
@@ -9485,7 +9485,7 @@ int llama_decode(
     if (ggml_mpi_rank(ctx->ctx_mpi) > 0) {
         // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
         const int n_ctx = llama_n_ctx(ctx);
-        std::vector<llama_token> tmp(n_ctx, llama_token_bos(ctx));
+        std::vector<llama_token> tmp(n_ctx, llama_token_bos(&(ctx->model)));
         while (llama_decode_internal(*ctx, batch) >= 0){};
         llama_backend_free();
         exit(1);

@@ -854,6 +854,9 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     printf("                        Not recommended since this is both slower and uses more VRAM.\n");
 #endif // GGML_USE_CUBLAS
 #endif
+#ifdef GGML_USE_MPI
+    printf("  --mpi-layer-split N   percentiles to split the layers by across nodes\n");
+#endif
     printf("  --verbose-prompt      print prompt before generation\n");
     printf("  -dkvc, --dump-kv-cache\n");
     printf("                        verbose print of the KV cache\n");

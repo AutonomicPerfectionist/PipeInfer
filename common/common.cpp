@@ -154,18 +154,37 @@ bool gpt_params_parse_ex(int argc, char ** argv, gpt_params & params) {
                 invalid_param = true;
                 break;
             }
-            params.n_threads = std::stoi(argv[i]);
-            if (params.n_threads <= 0) {
-                params.n_threads = std::thread::hardware_concurrency();
+            std::string arg_next = argv[i];
+
+            // split string by , and /
+            const std::regex regex{R"([,/]+)"};
+            std::sregex_token_iterator it{arg_next.begin(), arg_next.end(), regex, -1};
+            std::vector<std::string> split_arg{it, {}};
+            params.n_threads.resize(split_arg.size());
+            for (size_t i = 0; i < split_arg.size(); ++i) {
+                params.n_threads[i] = std::stoi(split_arg[i]);
+                if (params.n_threads[i] <= 0) {
+                    params.n_threads[i] = std::thread::hardware_concurrency();
+                }
             }
+
         } else if (arg == "-tb" || arg == "--threads-batch") {
             if (++i >= argc) {
                 invalid_param = true;
                 break;
             }
-            params.n_threads_batch = std::stoi(argv[i]);
-            if (params.n_threads_batch <= 0) {
-                params.n_threads_batch = std::thread::hardware_concurrency();
+            std::string arg_next = argv[i];
+
+            // split string by , and /
+            const std::regex regex{R"([,/]+)"};
+            std::sregex_token_iterator it{arg_next.begin(), arg_next.end(), regex, -1};
+            std::vector<std::string> split_arg{it, {}};
+            params.n_threads_batch.resize(split_arg.size());
+            for (size_t i = 0; i < split_arg.size(); ++i) {
+                params.n_threads_batch[i] = std::stoi(split_arg[i]);
+                if (params.n_threads_batch[i] <= 0) {
+                    params.n_threads_batch[i] = std::thread::hardware_concurrency();
+                }
             }
         } else if (arg == "-p" || arg == "--prompt") {
             if (++i >= argc) {
@@ -759,7 +778,7 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     printf("                        (can be specified more than once for multiple prompts).\n");
     printf("  --color               colorise output to distinguish prompt and user input from generations\n");
     printf("  -s SEED, --seed SEED  RNG seed (default: -1, use random seed for < 0)\n");
-    printf("  -t N, --threads N     number of threads to use during generation (default: %d)\n", params.n_threads);
+    printf("  -t N, --threads N     number of threads to use during generation (default: %d)\n", params.n_threads[0]);
     printf("  -tb N, --threads-batch N\n");
     printf("                        number of threads to use during batch and prompt processing (default: same as --threads)\n");
     printf("  -p PROMPT, --prompt PROMPT\n");
@@ -879,9 +898,9 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
 std::string get_system_info(const gpt_params & params) {
     std::ostringstream os;
 
-    os << "system_info: n_threads = " << params.n_threads;
-    if (params.n_threads_batch != -1) {
-        os << " (n_threads_batch = " << params.n_threads_batch << ")";
+    os << "system_info: n_threads = " << params.n_threads[0];
+    if (params.n_threads_batch[0] != -1) {
+        os << " (n_threads_batch = " << params.n_threads_batch[0] << ")";
     }
     os << " / " << std::thread::hardware_concurrency() << " | " << llama_print_system_info();
 
@@ -929,8 +948,8 @@ struct llama_context_params llama_context_params_from_gpt_params(const gpt_param
 
     cparams.n_ctx             = params.n_ctx;
     cparams.n_batch           = params.n_batch;
-    cparams.n_threads         = params.n_threads;
-    cparams.n_threads_batch   = params.n_threads_batch == -1 ? params.n_threads : params.n_threads_batch;
+    cparams.n_threads         = params.n_threads[0];
+    cparams.n_threads_batch   = params.n_threads_batch[0] == -1 ? params.n_threads[0] : params.n_threads_batch[0];
     cparams.mul_mat_q         = params.mul_mat_q;
     cparams.seed              = params.seed;
     cparams.f16_kv            = params.memory_f16;
@@ -970,6 +989,7 @@ void llama_batch_add(
 }
 
 std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_params(gpt_params & params) {
+    int32_t n_threads = params.n_threads[0];
     auto mparams = llama_model_params_from_gpt_params(params);
 
     llama_model * model  = llama_load_model_from_file(params.model.c_str(), mparams);
@@ -987,6 +1007,16 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
         return std::make_tuple(nullptr, nullptr);
     }
 
+#ifdef GGML_USE_MPI
+    int node_id = llama_node_id(lctx);
+    n_threads = (node_id >= params.n_threads.size()) ? get_num_physical_cores() : params.n_threads[node_id];
+    int32_t n_threads_batch = (node_id >= params.n_threads_batch.size()) ? -1 : params.n_threads_batch[node_id];
+
+    params.n_threads[0] = n_threads; // So we can treat index 0 as what our n_threads is elsewhere
+    params.n_threads_batch[0] = n_threads_batch;
+    llama_set_n_threads(lctx, n_threads, (n_threads_batch > 0) ? n_threads_batch : get_num_physical_cores());
+#endif
+
     for (unsigned int i = 0; i < params.lora_adapter.size(); ++i) {
         const std::string& lora_adapter = std::get<0>(params.lora_adapter[i]);
         float lora_scale = std::get<1>(params.lora_adapter[i]);
@@ -996,7 +1026,7 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
                                              ((i > 0) || params.lora_base.empty())
                                                 ? NULL
                                                 : params.lora_base.c_str(),
-                                             params.n_threads);
+                                             n_threads);
         if (err != 0) {
             fprintf(stderr, "%s: error: failed to apply lora adapter\n", __func__);
             llama_free(lctx);
@@ -1411,7 +1441,7 @@ void dump_non_result_info_yaml(FILE * stream, const gpt_params & params, const l
     dump_vector_float_yaml(stream, "tensor_split", tensor_split_vector);
 
     fprintf(stream, "tfs: %f # default: 1.0\n", sparams.tfs_z);
-    fprintf(stream, "threads: %d # default: %d\n", params.n_threads, std::thread::hardware_concurrency());
+    fprintf(stream, "threads: %d # default: %d\n", params.n_threads[0], std::thread::hardware_concurrency());
     fprintf(stream, "top_k: %d # default: 40\n", sparams.top_k);
     fprintf(stream, "top_p: %f # default: 0.95\n", sparams.top_p);
     fprintf(stream, "min_p: %f # default: 0.0\n", sparams.min_p);

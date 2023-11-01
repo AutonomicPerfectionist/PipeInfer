@@ -285,6 +285,11 @@ extern "C" {
 
     LLAMA_API int64_t llama_time_us(void);
 
+    // Get the ID of this compute node, usually 0
+    // unless running MPI, in which case it is the rank of the node
+    LLAMA_API int llama_node_id(struct llama_context * ctx);
+
+
     LLAMA_API int  llama_max_devices    (void);
     LLAMA_API bool llama_mmap_supported (void);
     LLAMA_API bool llama_mlock_supported(void);

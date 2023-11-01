@@ -3878,6 +3878,7 @@ struct llm_build_context {
         }
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             struct ggml_tensor * inpSA = inpL;
 
             // norm
@@ -3988,6 +3989,7 @@ struct llm_build_context {
         }
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             struct ggml_tensor * inpSA = inpL;
 
             cur = llm_build_norm(ctx0, inpL, hparams,
@@ -4108,6 +4110,7 @@ struct llm_build_context {
         }
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             struct ggml_tensor * attn_norm;
 
             attn_norm = llm_build_norm(ctx0, inpL, hparams,
@@ -4232,6 +4235,7 @@ struct llm_build_context {
         cb(inpL, "inpL", -1);
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             cur = llm_build_norm(ctx0, inpL, hparams,
                     model.layers[il].attn_norm,
                     model.layers[il].attn_norm_b,
@@ -4328,6 +4332,7 @@ struct llm_build_context {
         }
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             struct ggml_tensor * residual = inpL;
 
             cur = llm_build_norm(ctx0, inpL, hparams,
@@ -4530,6 +4535,7 @@ struct llm_build_context {
         cb(KQ_mask, "KQ_mask", -1);
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             struct ggml_tensor * inpSA = inpL;
 
             cur = llm_build_norm(ctx0, inpL, hparams,
@@ -4627,6 +4633,7 @@ struct llm_build_context {
         cb(inpL, "inp_norm", -1);
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             cur = llm_build_norm(ctx0, inpL, hparams,
                     model.layers[il].attn_norm,
                     model.layers[il].attn_norm_b,
@@ -4715,6 +4722,7 @@ struct llm_build_context {
         cb(KQ_mask, "KQ_mask", -1);
 
         for (int il = 0; il < n_layer; ++il) {
+            ggml_format_name(inpL, "layer_inp_%d", il); //MPI
             struct ggml_tensor * attn_norm;
 
             attn_norm = llm_build_norm(ctx0, inpL, hparams,

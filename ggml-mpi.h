@@ -126,8 +126,15 @@ void ggml_mpi_eval_init(
 
 void ggml_mpi_synch_int(
         struct ggml_mpi_context     * ctx_mpi,
-                int32_t * val
+                int32_t * val,
+                int root
         );
+
+void ggml_mpi_synch_float(
+        struct ggml_mpi_context     * ctx_mpi,
+        float * val,
+        int root
+);
 
 /**
  * Split a range across all nodes within the given

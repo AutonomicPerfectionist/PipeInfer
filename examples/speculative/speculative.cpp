@@ -62,10 +62,23 @@ int main(int argc, char ** argv) {
     params.logits_all = true;
     std::tie(model_tgt, ctx_tgt) = llama_init_from_gpt_params(params);
 
+    llama_split_comm(ctx_tgt, (llama_node_id(ctx_tgt) == 0) ? 0 : -1);
+
     // load the draft model
     params.model = params.model_draft;
     params.n_gpu_layers = params.n_gpu_layers_draft;
     std::tie(model_dft, ctx_dft) = llama_init_from_gpt_params(params);
+
+    llama_split_comm(ctx_dft, (llama_node_id(ctx_dft) == 1) ? 0 : -1);
+
+
+    llama_split_layers_weighted(ctx_dft, new float[] {1.0}, 1);
+    llama_split_layers_weighted(ctx_tgt, new float[] {1.0}, 1);
+
+    {
+        LOG_TEE("\n");
+        LOG_TEE("%s\n", get_system_info(params).c_str());
+    }
 
     {
         const int n_vocab_tgt = llama_n_vocab(model_tgt);
@@ -81,17 +94,17 @@ int main(int argc, char ** argv) {
             return 1;
         }
 
-        for (int i = SPEC_VOCAB_CHECK_START_TOKEN_ID; i < std::min(n_vocab_tgt, n_vocab_dft); ++i) {
-            const char * token_text_tgt = llama_token_get_text(model_tgt, i);
-            const char * token_text_dft = llama_token_get_text(model_dft, i);
-            if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
-                fprintf(stderr, "%s: error: draft model vocab must match target model to use speculation but ", __func__);
-                fprintf(stderr, "token %d content differs - target '%s', draft '%s'\n", i,
-                        llama_token_to_piece(ctx_tgt, i).c_str(),
-                        llama_token_to_piece(ctx_dft, i).c_str());
-                return 1;
-            }
-        }
+//        for (int i = SPEC_VOCAB_CHECK_START_TOKEN_ID; i < std::min(n_vocab_tgt, n_vocab_dft); ++i) {
+//            const char * token_text_tgt = llama_token_get_text(model_tgt, i);
+//            const char * token_text_dft = llama_token_get_text(model_dft, i);
+//            if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
+//                fprintf(stderr, "%s: error: draft model vocab must match target model to use speculation but ", __func__);
+//                fprintf(stderr, "token %d content differs - target '%s', draft '%s'\n", i,
+//                        llama_token_to_piece(ctx_tgt, i).c_str(),
+//                        llama_token_to_piece(ctx_dft, i).c_str());
+//                return 1;
+//            }
+//        }
     }
 
 
@@ -197,14 +210,21 @@ int main(int argc, char ** argv) {
             // sample from the target model
             llama_token id = llama_sampling_sample(ctx_sampling, ctx_tgt, NULL, drafts[s_keep].i_batch_tgt[i_dft]);
 
+            llama_swap_comm(ctx_tgt);
+            llama_sync_token(ctx_tgt, &id, 0);
+
+
             llama_sampling_accept(ctx_sampling, ctx_tgt, id, true);
 
             //LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, ctx_sampling->prev).c_str());
 
             const std::string token_str = llama_token_to_piece(ctx_tgt, id);
+            if (llama_node_id(ctx_tgt) == 0) {
+                printf("%s", token_str.c_str());
+                fflush(stdout);
+            }
 
-            printf("%s", token_str.c_str());
-            fflush(stdout);
+            llama_swap_comm(ctx_tgt);
 
             if (id == llama_token_eos(model_tgt)) {
                 has_eos = true;
@@ -269,8 +289,8 @@ int main(int argc, char ** argv) {
             llama_batch_clear(batch_dft);
             llama_batch_add  (batch_dft, id, n_past_dft, { 0 }, true);
 
-            llama_kv_cache_seq_rm(ctx_dft, 0, n_past_dft, -1);
-            // LOG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
+            llama_kv_cache_seq_rm(ctx_dft, -1, n_past_dft, -1);
+             LOG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
             llama_decode         (ctx_dft, batch_dft);
 
             ++n_past_dft;
@@ -313,17 +333,24 @@ int main(int argc, char ** argv) {
 
                 llama_sampling_sample(drafts[s].ctx_sampling, ctx_dft, NULL, drafts[s].i_batch_dft);
 
-                const auto & cur_p = drafts[s].ctx_sampling->cur;
+                llama_swap_comm(ctx_dft);
+                llama_sync_token(ctx_dft, &(drafts[s].i_batch_dft), 1);
+
+                auto & cur_p = drafts[s].ctx_sampling->cur;
 
                 for (int k = 0; k < std::min(n_seq_dft + 3, (int) cur_p.size()); ++k) {
+                    llama_sync_token_data(ctx_dft, &(cur_p[k]), 1);
                     LOG(" - draft candidate %3d for seq %3d, pos %3d: %6d (%8.3f) '%s'\n",
                             k, s, i, cur_p[k].id, cur_p[k].p, llama_token_to_piece(ctx_dft, cur_p[k].id).c_str());
                 }
 
+                llama_swap_comm(ctx_dft);
+
+
                 if (cur_p[0].p < p_accept) {
                     LOG("stopping drafting for seq %3d, probability too low: %.3f < %.3f\n", s, cur_p[0].p, p_accept);
                     drafts[s].drafting = false;
-                    continue;
+//                    continue;
                 }
 
                 std::vector<int> sa(1, s);

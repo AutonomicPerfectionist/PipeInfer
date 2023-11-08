@@ -1493,6 +1493,7 @@ struct llama_context {
 
 #ifdef GGML_USE_MPI
     ggml_mpi_context * ctx_mpi = NULL;
+    ggml_mpi_context * ctx_mpi_orig = NULL;
 #endif
 };
 
@@ -8698,6 +8699,35 @@ struct llama_context * llama_new_context_with_model(
     return ctx;
 }
 
+void llama_sync_token(struct llama_context * ctx, llama_token * token, int root) {
+#ifdef GGML_USE_MPI
+    ggml_mpi_synch_int(ctx->ctx_mpi, token, root);
+#endif
+}
+
+void llama_sync_token_data(struct llama_context * ctx, llama_token_data * data, int root) {
+#ifdef GGML_USE_MPI
+    ggml_mpi_synch_int(ctx->ctx_mpi, &(data->id), root);
+    ggml_mpi_synch_float(ctx->ctx_mpi, &(data->logit), root);
+    ggml_mpi_synch_float(ctx->ctx_mpi, &(data->p), root);
+#endif
+}
+
+void llama_swap_comm(struct llama_context * ctx) {
+#ifdef GGML_USE_MPI
+    ggml_mpi_context * temp = ctx->ctx_mpi;
+    ctx->ctx_mpi = ctx->ctx_mpi_orig;
+    ctx->ctx_mpi_orig = temp;
+#endif
+}
+
+void llama_split_comm(struct llama_context * ctx, int color) {
+#ifdef GGML_USE_MPI
+    ctx->ctx_mpi_orig = ctx->ctx_mpi;
+    ctx->ctx_mpi = ggml_mpi_split_comm(ctx->ctx_mpi, color, ggml_mpi_rank(ctx->ctx_mpi));
+#endif
+}
+
 void llama_split_layers_weighted(struct llama_context * ctx, float device_weights[], size_t num_weights) {
 #ifdef GGML_USE_MPI
     if (ggml_mpi_rank(ctx->ctx_mpi) == 0 && ggml_mpi_size(ctx->ctx_mpi) != num_weights) {
@@ -9506,6 +9536,8 @@ int llama_decode(
         while (llama_decode_internal(*ctx, batch) >= 0){};
         llama_backend_free();
         exit(1);
+    } else if (ggml_mpi_rank(ctx->ctx_mpi) < 0) {
+        return 0;
     }
 #endif
     const int ret = llama_decode_internal(*ctx, batch);

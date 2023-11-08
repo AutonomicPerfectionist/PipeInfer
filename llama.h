@@ -274,6 +274,14 @@ extern "C" {
 
     LLAMA_API void llama_split_layers_weighted(struct llama_context * ctx, float device_weights[], size_t num_weights);
 
+    LLAMA_API void llama_swap_comm(struct llama_context * ctx);
+
+    LLAMA_API void llama_sync_token(struct llama_context * ctx, llama_token * token, int root);\
+
+    LLAMA_API void llama_sync_token_data(struct llama_context * ctx, llama_token_data * data, int root);
+
+    LLAMA_API void llama_split_comm(struct llama_context * ctx, int color);
+
     LLAMA_API void llama_free_model(struct llama_model * model);
 
     LLAMA_API struct llama_context * llama_new_context_with_model(

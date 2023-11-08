@@ -39,8 +39,16 @@ struct ggml_mpi_context * ggml_mpi_init(void) {
 }
 
 struct ggml_mpi_context * ggml_mpi_split_comm(struct ggml_mpi_context * ctx, int color, int key) {
+    if (color < 0) {
+        color = MPI_UNDEFINED;
+    }
     struct ggml_mpi_context * newCtx = calloc(1, sizeof(struct ggml_mpi_context));
     MPI_Comm_split(ctx->comm, color, key, &newCtx->comm);
+    if(newCtx->comm == MPI_COMM_NULL) {
+        newCtx->rank = -1;
+        newCtx->size = -1;
+        return newCtx;
+    }
     MPI_Comm_rank(newCtx->comm, &newCtx->rank);
     MPI_Comm_size(newCtx->comm, &newCtx->size);
     return newCtx;
@@ -66,7 +74,9 @@ void ggml_mpi_eval_init(
                 int32_t         **  n_seq_ids,
                 int32_t         *** seq_id,
                 int8_t          **  logits) {
-
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
 
     MPI_Barrier(ctx_mpi->comm);
     int32_t old_n_tokens = *n_tokens;
@@ -130,9 +140,24 @@ void ggml_mpi_eval_init(
 
 void ggml_mpi_synch_int(
         struct ggml_mpi_context * ctx_mpi,
-                        int32_t * val
+                        int32_t * val,
+                        int root
 ) {
-    MPI_Bcast(val, 1, MPI_INT32_T, 0, ctx_mpi->comm);
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+    MPI_Bcast(val, 1, MPI_INT32_T, root, ctx_mpi->comm);
+}
+
+void ggml_mpi_synch_float(
+        struct ggml_mpi_context * ctx_mpi,
+        float * val,
+        int root
+) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+    MPI_Bcast(val, 1, MPI_FLOAT, root, ctx_mpi->comm);
 }
 
 static int ggml_graph_get_node_idx(struct ggml_cgraph * gf, const char * name) {
@@ -154,6 +179,9 @@ static int ggml_graph_get_node_idx(struct ggml_cgraph * gf, const char * name) {
 
 
 static void ggml_mpi_tensor_send(struct ggml_tensor * t, int mpi_rank_dst, MPI_Comm comm) {
+    if(comm == MPI_COMM_NULL) {
+        return;
+    }
     MPI_Datatype mpi_type;
 
     switch (t->type) {
@@ -167,6 +195,9 @@ static void ggml_mpi_tensor_send(struct ggml_tensor * t, int mpi_rank_dst, MPI_C
 }
 
 static void ggml_mpi_tensor_recv(struct ggml_tensor * t, int mpi_rank_src, MPI_Comm comm) {
+    if(comm == MPI_COMM_NULL) {
+        return;
+    }
     MPI_Datatype mpi_type;
 
     switch (t->type) {
@@ -195,7 +226,7 @@ uint16_t** ggml_mpi_split_range(
     // Only node 0 deals with the device splits, other nodes
     // get the splits from the scatter layers operation
 
-    if (ctx_mpi->rank != 0) {
+    if (ctx_mpi->comm == MPI_COMM_NULL || ctx_mpi->rank != 0) {
         return NULL;
     }
 
@@ -221,6 +252,10 @@ void ggml_mpi_scatter_layers(
     struct ggml_mpi_context * ctx_mpi,
     uint16_t ** layer_ranges
 ) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+
     // Layer ranges is a 2d array with the first dimension
     // having a length of the number of nodes and the second
     // dimension having a length of 2. The inner arrays contain

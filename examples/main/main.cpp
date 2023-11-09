@@ -188,7 +188,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    llama_split_layers_weighted(ctx, params.mpi_layer_split.data(), params.mpi_layer_split.size());
+    llama_split_layers_weighted(ctx, params.mpi_layer_split[0].data(), params.mpi_layer_split[0].size());
 
     const int n_ctx_train = llama_n_ctx_train(model);
     const int n_ctx = llama_n_ctx(ctx);

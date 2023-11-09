@@ -8693,6 +8693,8 @@ struct llama_context * llama_new_context_with_model(
 
 #ifdef GGML_USE_MPI
     ctx->ctx_mpi = ggml_mpi_init();
+    ctx->ctx_mpi_orig = ctx->ctx_mpi;
+
 
 #endif
 
@@ -8723,7 +8725,6 @@ void llama_swap_comm(struct llama_context * ctx) {
 
 void llama_split_comm(struct llama_context * ctx, int color) {
 #ifdef GGML_USE_MPI
-    ctx->ctx_mpi_orig = ctx->ctx_mpi;
     ctx->ctx_mpi = ggml_mpi_split_comm(ctx->ctx_mpi, color, ggml_mpi_rank(ctx->ctx_mpi));
 #endif
 }

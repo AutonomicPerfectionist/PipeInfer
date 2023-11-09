@@ -62,6 +62,9 @@ int main(int argc, char ** argv) {
     params.logits_all = true;
     std::tie(model_tgt, ctx_tgt) = llama_init_from_gpt_params(params);
 
+    llama_split_comm(ctx_tgt, (llama_node_id(ctx_tgt) == 0 || llama_node_id(ctx_tgt) == params.mpi_layer_split[0].size()) ? 0 : -1);
+    llama_swap_comm(ctx_tgt);
+
     llama_split_comm(ctx_tgt, (llama_node_id(ctx_tgt) < params.mpi_layer_split[0].size()) ? 0 : -1);
     printf("Size of first split: %lu, element: %f\n", params.mpi_layer_split[0].size(), params.mpi_layer_split[0][0]);
 
@@ -69,6 +72,9 @@ int main(int argc, char ** argv) {
     params.model = params.model_draft;
     params.n_gpu_layers = params.n_gpu_layers_draft;
     std::tie(model_dft, ctx_dft) = llama_init_from_gpt_params(params);
+
+    llama_split_comm(ctx_dft, (llama_node_id(ctx_dft) == 0 || llama_node_id(ctx_dft) == params.mpi_layer_split[0].size()) ? 0 : -1);
+    llama_swap_comm(ctx_dft);
 
     llama_split_comm(ctx_dft, (llama_node_id(ctx_dft) >= params.mpi_layer_split[0].size()) ? 0 : -1);
 

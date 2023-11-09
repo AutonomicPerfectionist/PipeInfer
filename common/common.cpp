@@ -574,7 +574,7 @@ bool gpt_params_parse_ex(int argc, char ** argv, gpt_params & params) {
             std::vector<std::string> split_arg{it, {}};
             params.mpi_layer_split.resize(split_arg.size());
             for (size_t i = 0; i < split_arg.size(); ++i) {
-                std::sregex_token_iterator it_inner{split_arg[i].begin(), split_arg[i].end(), regex, -1};
+                std::sregex_token_iterator it_inner{split_arg[i].begin(), split_arg[i].end(), inner_regex, -1};
                 std::vector<std::string> split_arg_inner{it_inner, {}};
                 params.mpi_layer_split[i].resize(split_arg_inner.size());
                 for (size_t j = 0; j < split_arg_inner.size(); ++j) {

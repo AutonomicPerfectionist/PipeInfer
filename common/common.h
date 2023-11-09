@@ -60,7 +60,7 @@ struct gpt_params {
     int32_t n_gpu_layers                    = -1;    // number of layers to store in VRAM (-1 - use default)
     int32_t n_gpu_layers_draft              = -1;    // number of layers to store in VRAM for the draft model (-1 - use default)
     int32_t main_gpu                        = 0;     // the GPU that is used for scratch and small tensors
-    std::vector<float> mpi_layer_split      = {1.0}; // list of percentages of the total number of layers
+    std::vector<std::vector<float>> mpi_layer_split      = {{1.0}}; // list of percentages of the total number of layers
     float   tensor_split[LLAMA_MAX_DEVICES] = {0};   // how split tensors should be distributed across GPUs
     int32_t n_beams                         = 0;     // if non-zero then use beam search of given width.
     float   rope_freq_base                  = 0.0f;  // RoPE base frequency

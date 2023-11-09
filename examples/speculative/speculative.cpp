@@ -62,18 +62,21 @@ int main(int argc, char ** argv) {
     params.logits_all = true;
     std::tie(model_tgt, ctx_tgt) = llama_init_from_gpt_params(params);
 
-    llama_split_comm(ctx_tgt, (llama_node_id(ctx_tgt) == 0) ? 0 : -1);
+    llama_split_comm(ctx_tgt, (llama_node_id(ctx_tgt) < params.mpi_layer_split[0].size()) ? 0 : -1);
+    printf("Size of first split: %lu, element: %f\n", params.mpi_layer_split[0].size(), params.mpi_layer_split[0][0]);
 
     // load the draft model
     params.model = params.model_draft;
     params.n_gpu_layers = params.n_gpu_layers_draft;
     std::tie(model_dft, ctx_dft) = llama_init_from_gpt_params(params);
 
-    llama_split_comm(ctx_dft, (llama_node_id(ctx_dft) == 1) ? 0 : -1);
+    llama_split_comm(ctx_dft, (llama_node_id(ctx_dft) >= params.mpi_layer_split[0].size()) ? 0 : -1);
+
+    printf("Size of second split: %lu, element: %f\n", params.mpi_layer_split[1].size(), params.mpi_layer_split[1][0]);
 
 
-    llama_split_layers_weighted(ctx_dft, new float[] {1.0}, 1);
-    llama_split_layers_weighted(ctx_tgt, new float[] {1.0}, 1);
+    llama_split_layers_weighted(ctx_tgt, params.mpi_layer_split[0].data(), params.mpi_layer_split[0].size());
+    llama_split_layers_weighted(ctx_dft, params.mpi_layer_split[1].data(), params.mpi_layer_split[1].size());
 
     {
         LOG_TEE("\n");
@@ -350,7 +353,7 @@ int main(int argc, char ** argv) {
                 if (cur_p[0].p < p_accept) {
                     LOG("stopping drafting for seq %3d, probability too low: %.3f < %.3f\n", s, cur_p[0].p, p_accept);
                     drafts[s].drafting = false;
-//                    continue;
+                    continue;
                 }
 
                 std::vector<int> sa(1, s);

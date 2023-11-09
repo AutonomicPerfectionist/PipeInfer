@@ -8741,6 +8741,9 @@ void llama_split_layers_weighted(struct llama_context * ctx, float device_weight
 }
 
 void llama_free(struct llama_context * ctx) {
+#ifdef GGML_USE_MPI
+    ggml_mpi_free(ctx->ctx_mpi);
+#endif
     delete ctx;
 }
 
@@ -9582,6 +9585,11 @@ int llama_process_mpi_worker(
             break;
         case 5:
             llama_kv_cache_seq_shift(ctx, 0, 0, 0, 0);
+            break;
+        case 6:
+            llama_free(ctx);
+            llama_backend_free();
+            exit(0);
             break;
     }
     return 0;

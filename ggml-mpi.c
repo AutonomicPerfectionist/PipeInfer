@@ -20,6 +20,14 @@ struct ggml_mpi_context {
     MPI_Status status;
 };
 
+void ggml_mpi_sync_pipelined(
+        struct ggml_mpi_context *   ctx_mpi,
+        void * val,
+        int count,
+        MPI_Datatype datatype,
+        int tag
+);
+
 void ggml_mpi_backend_init(void) {
     int ret;
     MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &ret);
@@ -57,6 +65,10 @@ struct ggml_mpi_context * ggml_mpi_split_comm(struct ggml_mpi_context * ctx, int
 }
 
 void ggml_mpi_free(struct ggml_mpi_context * ctx) {
+    if(ctx->comm == MPI_COMM_NULL) {
+        return;
+    }
+    ggml_mpi_sync_pipelined(ctx, NULL, 0, MPI_INT8_T, 6);
     MPI_Comm_free(&(ctx->comm));
     free(ctx);
 }

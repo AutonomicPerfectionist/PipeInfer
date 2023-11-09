@@ -8973,10 +8973,20 @@ int llama_get_kv_cache_used_cells(const struct llama_context * ctx) {
 }
 
 void llama_kv_cache_clear(struct llama_context * ctx) {
+#ifdef GGML_USE_MPI
+    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, NULL, 0, 1);
+#endif
     llama_kv_cache_clear(ctx->kv_self);
 }
 
 void llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+#ifdef GGML_USE_MPI
+    int32_t vals[3] = {seq_id, p0, p1};
+    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 3, 2);
+    seq_id = vals[0];
+    p0 = vals[1];
+    p1 = vals[2];
+#endif
     llama_kv_cache_seq_rm(ctx->kv_self, seq_id, p0, p1);
 }
 
@@ -8984,14 +8994,36 @@ void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, 
     if (seq_id_src == seq_id_dst) {
         return;
     }
+#ifdef GGML_USE_MPI
+    int32_t vals[4] = {seq_id_src, seq_id_dst, p0, p1};
+    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 4, 3);
+    seq_id_src = vals[0];
+    seq_id_dst = vals[1];
+    p0 = vals[2];
+    p1 = vals[3];
+#endif
     llama_kv_cache_seq_cp(ctx->kv_self, seq_id_src, seq_id_dst, p0, p1);
 }
 
 void llama_kv_cache_seq_keep(struct llama_context * ctx, llama_seq_id seq_id) {
+#ifdef GGML_USE_MPI
+    int32_t vals[1] = {seq_id};
+    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 1, 4);
+    seq_id = vals[0];
+#endif
     llama_kv_cache_seq_keep(ctx->kv_self, seq_id);
 }
 
 void llama_kv_cache_seq_shift(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {
+#ifdef GGML_USE_MPI
+    int32_t vals[4] = {seq_id, p0, p1, delta};
+    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 4, 5);
+    seq_id = vals[0];
+    p0 = vals[1];
+    p1 = vals[2];
+    delta = vals[3];
+#endif
+
     llama_kv_cache_seq_shift(ctx->kv_self, seq_id, p0, p1, delta);
 }
 
@@ -9525,6 +9557,38 @@ void llama_batch_free(struct llama_batch batch) {
     if (batch.logits)   free(batch.logits);
 }
 
+#ifdef GGML_USE_MPI
+
+int llama_process_mpi_worker(
+        struct llama_context * ctx,
+        struct llama_batch   batch) {
+    ggml_mpi_probe(ctx->ctx_mpi, -1, -1);
+    int tag = ggml_mpi_status_tag(ctx->ctx_mpi);
+    switch (tag) {
+        case 0:
+            return llama_decode_internal(*ctx, batch);
+            break;
+        case 1:
+            llama_kv_cache_clear(ctx);
+            break;
+        case 2:
+            llama_kv_cache_seq_rm(ctx, 0, 0, 0);
+            break;
+        case 3:
+            llama_kv_cache_seq_cp(ctx, 0, 0, 0, 0);
+            break;
+        case 4:
+            llama_kv_cache_seq_keep(ctx, 0);
+            break;
+        case 5:
+            llama_kv_cache_seq_shift(ctx, 0, 0, 0, 0);
+            break;
+    }
+    return 0;
+}
+
+#endif
+
 int llama_decode(
         struct llama_context * ctx,
           struct llama_batch   batch) {
@@ -9534,7 +9598,7 @@ int llama_decode(
         // Enter a blocking eval loop with dummy input, letting rank=0 drive the process
         const int n_ctx = llama_n_ctx(ctx);
         std::vector<llama_token> tmp(n_ctx, llama_token_bos(&(ctx->model)));
-        while (llama_decode_internal(*ctx, batch) >= 0){};
+        while (llama_process_mpi_worker(ctx, batch) >= 0){};
         llama_backend_free();
         exit(1);
     } else if (ggml_mpi_rank(ctx->ctx_mpi) < 0) {

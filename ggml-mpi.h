@@ -75,6 +75,20 @@ struct ggml_mpi_context * ggml_mpi_init(void);
  */
 struct ggml_mpi_context * ggml_mpi_split_comm(struct ggml_mpi_context * ctx, int color, int key);
 
+void ggml_mpi_barrier(struct ggml_mpi_context * ctx);
+
+int ggml_mpi_next_node(struct ggml_mpi_context * ctx_mpi);
+
+void ggml_mpi_sync_ints_pipelined(
+        struct ggml_mpi_context * ctx_mpi,
+        int32_t * vals,
+        int count,
+        int tag
+);
+// clear = 1, rm = 2, cp = 3, keep = 4, seq_shift = 5
+void ggml_mpi_probe(struct ggml_mpi_context * ctx_mpi, int src, int tag);
+int ggml_mpi_status_tag(struct ggml_mpi_context * ctx_mpi);
+
 /**
  * Frees the given context, including the communicator. No MPI
  * operations besides ggml_mpi_backend_freee(void) should be executed after

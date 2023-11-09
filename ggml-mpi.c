@@ -17,6 +17,7 @@ struct ggml_mpi_context {
     MPI_Comm comm;
     int layer_start;
     int layer_end;
+    MPI_Status status;
 };
 
 void ggml_mpi_backend_init(void) {
@@ -34,6 +35,7 @@ struct ggml_mpi_context * ggml_mpi_init(void) {
     MPI_Comm_rank(MPI_COMM_WORLD, &ctx->rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ctx->size);
     ctx->comm = MPI_COMM_WORLD;
+//    ctx->status = *MPI_STATUS_IGNORE;
 
     return ctx;
 }
@@ -67,6 +69,40 @@ size_t ggml_mpi_size(struct ggml_mpi_context * ctx) {
     return ctx->size;
 }
 
+void ggml_mpi_barrier(struct ggml_mpi_context * ctx_mpi) {
+    MPI_Barrier(ctx_mpi->comm);
+}
+
+void ggml_mpi_probe(struct ggml_mpi_context * ctx_mpi, int src, int tag) {
+    MPI_Probe((src >= 0) ? src : MPI_ANY_SOURCE, (tag >= 0) ? tag : MPI_ANY_TAG, ctx_mpi->comm, &(ctx_mpi->status));
+}
+
+int ggml_mpi_status_tag(struct ggml_mpi_context * ctx_mpi) {
+    return ctx_mpi->status.MPI_TAG;
+}
+
+int ggml_mpi_next_node(struct ggml_mpi_context * ctx_mpi) {
+    return (ctx_mpi->rank + 1) % ctx_mpi->size;
+}
+
+void ggml_mpi_sync_pipelined(
+        struct ggml_mpi_context *   ctx_mpi,
+        void * val,
+        int count,
+        MPI_Datatype datatype,
+        int tag
+        ) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+    if (ctx_mpi->rank != 0) {
+        MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
+    }
+    if(ctx_mpi->rank < ctx_mpi->size - 1) {
+        MPI_Send(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
+    }
+}
+
 void ggml_mpi_eval_init(
         struct ggml_mpi_context *   ctx_mpi,
                 int32_t         *   n_tokens,
@@ -77,10 +113,9 @@ void ggml_mpi_eval_init(
     if(ctx_mpi->comm == MPI_COMM_NULL) {
         return;
     }
-
-    MPI_Barrier(ctx_mpi->comm);
     int32_t old_n_tokens = *n_tokens;
-    MPI_Bcast(n_tokens, 1, MPI_INT, 0, ctx_mpi->comm);
+
+    ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, 0);
 
     // If what was passed in differs from what was broadcast,
     // we can't guarantee the allocated sizes are correct
@@ -95,7 +130,7 @@ void ggml_mpi_eval_init(
 
 
 //    MPI_Bcast(&total_n_seq_ids,     1, MPI_INT32_T, 0, ctx_mpi->comm);
-    MPI_Bcast(*n_seq_ids,   *n_tokens, MPI_INT32_T, 0, ctx_mpi->comm);
+    ggml_mpi_sync_pipelined(ctx_mpi, *n_seq_ids,   *n_tokens, MPI_INT32_T, 0);
 
     // We need to know the total number of sequence
     // ids, so we count them all up
@@ -121,8 +156,8 @@ void ggml_mpi_eval_init(
     }
 
 
-    MPI_Bcast(             *pos, *n_tokens,        MPI_INT32_T, 0, ctx_mpi->comm);
-    MPI_Bcast(flattened_seq_ids,  total_n_seq_ids, MPI_INT32_T, 0, ctx_mpi->comm);
+    ggml_mpi_sync_pipelined(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, 0);
+    ggml_mpi_sync_pipelined(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, 0);
     //MPI_Bcast(*logits,               *n_tokens,        MPI_INT8_T, 0, ctx_mpi->comm);
     int32_t ** new_seq_id = calloc(*n_tokens, sizeof(int32_t*));
     current_index = 0;
@@ -136,6 +171,15 @@ void ggml_mpi_eval_init(
     free(flattened_seq_ids);
     //free(*seq_id); // <- something is still holding onto this, need to investigate
     *seq_id = new_seq_id;
+}
+
+void ggml_mpi_sync_ints_pipelined(
+        struct ggml_mpi_context * ctx_mpi,
+        int32_t * vals,
+        int count,
+        int tag
+) {
+    ggml_mpi_sync_pipelined(ctx_mpi, vals, count, MPI_INT32_T, tag);
 }
 
 void ggml_mpi_synch_int(
@@ -206,9 +250,7 @@ static void ggml_mpi_tensor_recv(struct ggml_tensor * t, int mpi_rank_src, MPI_C
         default: GGML_ASSERT(false && "not implemented");
     }
 
-    MPI_Status status; UNUSED(status);
-
-    const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, MPI_ANY_TAG, comm, &status);
+    const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
     GGML_ASSERT(retval == MPI_SUCCESS);
 }
 
@@ -392,6 +434,6 @@ void ggml_mpi_graph_compute_post(
 
     // send the output data to the next node
     if (mpi_rank > 0) {
-        ggml_mpi_tensor_send(gf->nodes[gf->n_nodes - 1], (mpi_rank + 1) % mpi_size, ctx_mpi->comm);
+        ggml_mpi_tensor_send(gf->nodes[gf->n_nodes - 1], ggml_mpi_next_node(ctx_mpi), ctx_mpi->comm);
     }
 }

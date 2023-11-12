@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <deque>
+
 
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  100
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
@@ -20,6 +22,11 @@ struct seq_draft {
     std::vector<llama_token> tokens;
 
     struct llama_sampling_context * ctx_sampling;
+};
+
+struct seq_async_run {
+    struct ggml_cgraph * cgraph;
+    struct llama_batch batch;
 };
 
 int main(int argc, char ** argv) {
@@ -192,6 +199,9 @@ int main(int argc, char ** argv) {
     llama_batch batch_dft = llama_batch_init(params.n_ctx, 0, 1);
     llama_batch batch_tgt = llama_batch_init(params.n_ctx, 0, n_seq_dft);
 
+    std::deque<struct ggml_cgraph *> dft_cgraphs;
+    std::deque<struct ggml_cgraph *> tgt_cgraphs;
+
     const auto t_dec_start = ggml_time_us();
 
     // sample from the last token of the prompt
@@ -216,9 +226,15 @@ int main(int argc, char ** argv) {
         while (true) {
             LOG("sampling target: s_keep = %3d, i_dft = %3d, i_batch_tgt = %3d\n", s_keep, i_dft, drafts[s_keep].i_batch_tgt[i_dft]);
 
+            if (!tgt_cgraphs.empty()) {
+                llama_finish_async_decode(*ctx_tgt, batch_tgt, tgt_cgraphs.back());
+                tgt_cgraphs.pop_back();
+            }
+
             // sample from the target model
             llama_token id = llama_sampling_sample(ctx_sampling, ctx_tgt, NULL, drafts[s_keep].i_batch_tgt[i_dft]);
 
+            // Swap to pipeline roots
             llama_swap_comm(ctx_tgt);
             llama_sync_token(ctx_tgt, &id, 0);
 
@@ -228,12 +244,17 @@ int main(int argc, char ** argv) {
             //LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, ctx_sampling->prev).c_str());
 
             const std::string token_str = llama_token_to_piece(ctx_tgt, id);
+            // Root of WORLD
             if (llama_node_id(ctx_tgt) == 0) {
                 printf("%s", token_str.c_str());
                 fflush(stdout);
             }
 
+            // Switch back to target pipeline only
             llama_swap_comm(ctx_tgt);
+
+            // We can start the target pipeline now without needing to wait for speculation
+//            tgt_cgraphs.push_front(llama_start_async_decode(*ctx_tgt, batch_tgt));
 
             if (id == llama_token_eos(model_tgt)) {
                 has_eos = true;
@@ -276,6 +297,7 @@ int main(int argc, char ** argv) {
             {
                 LOG("keeping sequence %d, n_past_tgt = %d, n_past_dft = %d\n", s_keep, n_past_tgt, n_past_dft);
 
+                // Pipeline syncing cache ops
                 llama_kv_cache_seq_keep(ctx_dft, s_keep);
                 llama_kv_cache_seq_cp  (ctx_dft, s_keep, 0, -1, -1);
                 llama_kv_cache_seq_keep(ctx_dft, 0);
@@ -298,9 +320,13 @@ int main(int argc, char ** argv) {
             llama_batch_clear(batch_dft);
             llama_batch_add  (batch_dft, id, n_past_dft, { 0 }, true);
 
+            // Pipeline sync on draft pipeline
             llama_kv_cache_seq_rm(ctx_dft, -1, n_past_dft, -1);
-             LOG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
-            llama_decode         (ctx_dft, batch_dft);
+
+            // Kick off drafting pipeline but don't need it just yet
+            dft_cgraphs.push_front(llama_start_async_decode(*ctx_dft, batch_dft));
+            //llama_decode(ctx_dft, batch_dft);
+            // DON'T FORGET THE MATCHING DECODE WHEN NEEDED
 
             ++n_past_dft;
 
@@ -326,6 +352,14 @@ int main(int argc, char ** argv) {
 
         llama_batch_clear(batch_tgt);
         llama_batch_add  (batch_tgt, drafts[0].tokens[0], n_past_tgt, { 0 }, true);
+
+        // We need the draft now, so wait for it
+        if (!dft_cgraphs.empty()) {
+            llama_finish_async_decode(*ctx_dft, batch_dft, dft_cgraphs.back());
+            dft_cgraphs.pop_back();
+        }
+        LOG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
+
 
         // sample n_draft tokens from the draft model using tree-based sampling
         for (int i = 0; i < n_draft; ++i) {
@@ -451,7 +485,7 @@ int main(int argc, char ** argv) {
             }
 
             // LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
-            llama_decode(ctx_tgt, batch_tgt);
+            tgt_cgraphs.push_front(llama_start_async_decode(*ctx_tgt, batch_tgt));
             ++n_past_tgt;
         }
 

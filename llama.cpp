@@ -5420,22 +5420,17 @@ static struct ggml_cgraph * llama_build_graph(
     return result;
 }
 
-// decode a batch of tokens by evaluating the transformer
-//
-//   - lctx:      llama context
-//   - batch:     batch to evaluate
-//
-// return 0 on success
-// return positive int on warning
-// return negative int on error
-//
-static int llama_decode_internal(
-         llama_context & lctx,
-           llama_batch   batch) {
+
+
+static struct ggml_cgraph * llama_decode_internal_phased(
+            llama_context & lctx,
+            llama_batch   batch,
+            uint8_t phase,
+            ggml_cgraph * cgraph) {
     uint32_t n_tokens = batch.n_tokens;
     if (n_tokens == 0) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0", __func__);
-        return -1;
+        return nullptr;
     }
 
     const auto & model   = lctx.model;
@@ -5492,74 +5487,92 @@ static int llama_decode_internal(
         batch.seq_id = seq_id_arr.data();
     }
 
-    // if we have enough unused cells before the current head ->
-    //   better to start searching from the beginning of the cache, hoping to fill it
-    if (kv_self.head > kv_self.used + 2*n_tokens) {
-        kv_self.head = 0;
-    }
+    if (phase == 0) {
+
+        // if we have enough unused cells before the current head ->
+        //   better to start searching from the beginning of the cache, hoping to fill it
+        if (kv_self.head > kv_self.used + 2*n_tokens) {
+            kv_self.head = 0;
+        }
 
 #ifdef GGML_USE_MPI
-    // TODO: needs fix after #3228
-    ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits));
-    n_tokens = batch.n_tokens;
+        // TODO: needs fix after #3228
+        ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits));
+        n_tokens = batch.n_tokens;
 #endif
-    if (!llama_kv_cache_find_slot(kv_self, batch)) {
-        return 1;
-    }
+        if (!llama_kv_cache_find_slot(kv_self, batch)) {
+            printf("Cannot find cache slot\n");
+            return nullptr;
+        }
 
-    // a heuristic, to avoid attending the full cache if it is not yet utilized
-    // after enough generations, the benefit from this heuristic disappears
-    // if we start defragmenting the cache, the benefit from this will be more important
-    //kv_self.n = std::max(32, GGML_PAD(llama_kv_cache_cell_max(kv_self), 32));   // TODO: this might be better for CUDA?
-    kv_self.n = std::min((int32_t) cparams.n_ctx, std::max(32, llama_kv_cache_cell_max(kv_self)));
+        // a heuristic, to avoid attending the full cache if it is not yet utilized
+        // after enough generations, the benefit from this heuristic disappears
+        // if we start defragmenting the cache, the benefit from this will be more important
+        //kv_self.n = std::max(32, GGML_PAD(llama_kv_cache_cell_max(kv_self), 32));   // TODO: this might be better for CUDA?
+        kv_self.n = std::min((int32_t) cparams.n_ctx, std::max(32, llama_kv_cache_cell_max(kv_self)));
 
-    //printf("kv_self.n = %5d, kv_self.used = %5d, kv_self.head = %5d\n", kv_self.n, kv_self.used, kv_self.head);
+        //printf("kv_self.n = %5d, kv_self.used = %5d, kv_self.head = %5d\n", kv_self.n, kv_self.used, kv_self.head);
 
-    ggml_allocr_reset(lctx.alloc);
-    ggml_cgraph * gf = llama_build_graph(lctx, batch);
+        ggml_allocr_reset(lctx.alloc);
+        ggml_cgraph * gf = llama_build_graph(lctx, batch);
 
-    ggml_allocr_alloc_graph(lctx.alloc, gf);
+        ggml_allocr_alloc_graph(lctx.alloc, gf);
 
-    struct ggml_tensor * res        = gf->nodes[gf->n_nodes - 1];
-    struct ggml_tensor * embeddings = gf->nodes[gf->n_nodes - 2];
+        struct ggml_tensor *res = gf->nodes[gf->n_nodes - 1];
+        struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
 
-    GGML_ASSERT(strcmp(res->name,        "result_output") == 0);
-    GGML_ASSERT(strcmp(embeddings->name, "result_norm")   == 0);
+        GGML_ASSERT(strcmp(res->name, "result_output") == 0);
+        GGML_ASSERT(strcmp(embeddings->name, "result_norm") == 0);
 
+#ifdef GGML_USE_MPI
+        const int64_t n_layer = hparams.n_layer;
+        ggml_mpi_graph_creation_post(lctx.ctx_mpi, gf, n_layer);
+#endif
 
 #ifdef GGML_USE_CUBLAS
-    for (int i = 0; i < gf->n_leafs; i++) {
-        ggml_tensor * node = gf->leafs[i];
-        if (node->backend == GGML_BACKEND_GPU && node->extra == NULL) {
-            ggml_cuda_assign_scratch_offset(node, (char*)node->data - (char *) lctx.buf_alloc.data);
-            ggml_cuda_copy_to_device(node);
+        for (int i = 0; i < gf->n_leafs; i++) {
+            ggml_tensor * node = gf->leafs[i];
+            if (node->backend == GGML_BACKEND_GPU && node->extra == NULL) {
+                ggml_cuda_assign_scratch_offset(node, (char*)node->data - (char *) lctx.buf_alloc.data);
+                ggml_cuda_copy_to_device(node);
+            }
         }
-    }
 
-    for (int i = 0; i < gf->n_nodes; i++) {
-        ggml_tensor * node = gf->nodes[i];
-        if (node->backend == GGML_BACKEND_GPU && node->extra == NULL) {
-            ggml_cuda_assign_scratch_offset(node, (char*)node->data - (char *) lctx.buf_alloc.data);
+        for (int i = 0; i < gf->n_nodes; i++) {
+            ggml_tensor * node = gf->nodes[i];
+            if (node->backend == GGML_BACKEND_GPU && node->extra == NULL) {
+                ggml_cuda_assign_scratch_offset(node, (char*)node->data - (char *) lctx.buf_alloc.data);
+            }
         }
-    }
 
-    // HACK: ggml-alloc may change the tensor backend when reusing a parent, so force output to be on the CPU here if needed
-    if (!lctx.embedding.empty()) {
-        embeddings->backend = GGML_BACKEND_CPU;
-    }
-    res->backend = GGML_BACKEND_CPU;
+        // HACK: ggml-alloc may change the tensor backend when reusing a parent, so force output to be on the CPU here if needed
+        if (!lctx.embedding.empty()) {
+            embeddings->backend = GGML_BACKEND_CPU;
+        }
+        res->backend = GGML_BACKEND_CPU;
+#endif
+        return gf;
+    } else if (phase == 1) {
+
+
+        ggml_cgraph * gf = cgraph;
+        struct ggml_tensor *res = gf->nodes[gf->n_nodes - 1];
+        struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
+
+#ifdef GGML_USE_MPI
+        ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf);
 #endif
 
-    // LLAMA_LOG_INFO("graph build time: %.3f ms (%d nodes, %d leafs)\n", (ggml_time_us() - t_start_us)/1000.0, gf->n_nodes, gf->n_leafs);
+        // LLAMA_LOG_INFO("graph build time: %.3f ms (%d nodes, %d leafs)\n", (ggml_time_us() - t_start_us)/1000.0, gf->n_nodes, gf->n_leafs);
 
-    // for big prompts, if BLAS is enabled, it is better to use only one thread
-    // otherwise, the threads are spin-lock waiting for the BLAS calls and are degrading the performance
-    // TODO: this is mostly important for Apple Silicon where CBLAS is still performing very well
-    //       we still need some threads to process all non-mul_mat ops, but not too much to avoid interfering
-    //       with the BLAS calls. need a better solution
-    if (n_tokens >= 32 && ggml_cpu_has_blas() && !ggml_cpu_has_gpublas()) {
-        n_threads = std::min(4, n_threads);
-    }
+        // for big prompts, if BLAS is enabled, it is better to use only one thread
+        // otherwise, the threads are spin-lock waiting for the BLAS calls and are degrading the performance
+        // TODO: this is mostly important for Apple Silicon where CBLAS is still performing very well
+        //       we still need some threads to process all non-mul_mat ops, but not too much to avoid interfering
+        //       with the BLAS calls. need a better solution
+        if (n_tokens >= 32 && ggml_cpu_has_blas() && !ggml_cpu_has_gpublas()) {
+            n_threads = std::min(4, n_threads);
+        }
 
     // If all tensors can be run on the GPU then using more than 1 thread is detrimental.
     const bool full_offload_supported =
@@ -5571,107 +5584,150 @@ static int llama_decode_internal(
         model.arch == LLM_ARCH_STARCODER  ||
         model.arch == LLM_ARCH_STABLELM;
 
-    const bool fully_offloaded = model.n_gpu_layers >= (int) hparams.n_layer + 3;
-    if (ggml_cpu_has_cublas() && full_offload_supported && fully_offloaded) {
-        n_threads = 1;
-    }
-#if GGML_USE_MPI
-    const int64_t n_layer = hparams.n_layer;
-    ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf, n_layer);
-#endif
+        const bool fully_offloaded = model.n_gpu_layers >= (int) hparams.n_layer + 3;
+        if (ggml_cpu_has_cublas() && full_offload_supported && fully_offloaded) {
+            n_threads = 1;
+        }
 
 #ifdef GGML_USE_METAL
-    if (lctx.ctx_metal) {
-        ggml_metal_set_n_cb     (lctx.ctx_metal, n_threads);
-        ggml_metal_graph_compute(lctx.ctx_metal, gf);
-    } else {
-        ggml_graph_compute_helper(lctx.work_buffer, gf, n_threads);
-    }
+        if (lctx.ctx_metal) {
+            ggml_metal_set_n_cb     (lctx.ctx_metal, n_threads);
+            ggml_metal_graph_compute(lctx.ctx_metal, gf);
+        } else {
+            ggml_graph_compute_helper(lctx.work_buffer, gf, n_threads);
+        }
 #else
-    ggml_graph_compute_helper(lctx.work_buffer, gf, n_threads);
+        ggml_graph_compute_helper(lctx.work_buffer, gf, n_threads);
 #endif
 
 #if GGML_USE_MPI
-    ggml_mpi_graph_compute_post(lctx.ctx_mpi, gf, n_layer);
+        ggml_mpi_graph_compute_post(lctx.ctx_mpi, gf);
 #endif
 
-    // update the kv ring buffer
-    {
-        if (kv_self.has_shift) {
-            kv_self.has_shift = false;
-            for (uint32_t i = 0; i < kv_self.size; ++i) {
-                kv_self.cells[i].delta = 0;
+        // update the kv ring buffer
+        {
+            if (kv_self.has_shift) {
+                kv_self.has_shift = false;
+                for (uint32_t i = 0; i < kv_self.size; ++i) {
+                    kv_self.cells[i].delta = 0;
+                }
+            }
+
+            kv_self.head += n_tokens;
+
+            // Ensure kv cache head points to a valid index.
+            if (kv_self.head >= kv_self.size) {
+                kv_self.head = 0;
             }
         }
-
-        kv_self.head += n_tokens;
-
-        // Ensure kv cache head points to a valid index.
-        if (kv_self.head >= kv_self.size) {
-            kv_self.head = 0;
-        }
-    }
 
 #ifdef GGML_PERF
-    // print timing information per ggml operation (for debugging purposes)
-    // requires GGML_PERF to be defined
-    ggml_graph_print(gf);
+        // print timing information per ggml operation (for debugging purposes)
+        // requires GGML_PERF to be defined
+        ggml_graph_print(gf);
 #endif
 
-    // plot the computation graph in dot format (for debugging purposes)
-    //if (n_past%100 == 0) {
-    //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
-    //}
+        // plot the computation graph in dot format (for debugging purposes)
+        //if (n_past%100 == 0) {
+        //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
+        //}
 
-    // extract logits
-    // TODO: do not compute and extract logits if only embeddings are needed
-    //       need to update the graphs to skip "result_output"
-    {
-        auto & logits_out = lctx.logits;
+        // extract logits
+        // TODO: do not compute and extract logits if only embeddings are needed
+        //       need to update the graphs to skip "result_output"
+        {
+            auto & logits_out = lctx.logits;
 
-        if (batch.logits) {
-            logits_out.resize(n_vocab * n_tokens);
-            for (uint32_t i = 0; i < n_tokens; i++) {
-                if (batch.logits[i] == 0) {
-                    continue;
+            if (batch.logits) {
+                logits_out.resize(n_vocab * n_tokens);
+                for (uint32_t i = 0; i < n_tokens; i++) {
+                    if (batch.logits[i] == 0) {
+                        continue;
+                    }
+                    memcpy(logits_out.data() + (n_vocab*i), (float *) ggml_get_data(res) + (n_vocab*i), sizeof(float)*n_vocab);
                 }
-                memcpy(logits_out.data() + (n_vocab*i), (float *) ggml_get_data(res) + (n_vocab*i), sizeof(float)*n_vocab);
+            } else if (lctx.logits_all) {
+                logits_out.resize(n_vocab * n_tokens);
+                memcpy(logits_out.data(), (float *) ggml_get_data(res), sizeof(float)*n_vocab*n_tokens);
+            } else {
+                logits_out.resize(n_vocab);
+                memcpy(logits_out.data(), (float *) ggml_get_data(res) + (n_vocab*(n_tokens - 1)), sizeof(float)*n_vocab);
             }
-        } else if (lctx.logits_all) {
-            logits_out.resize(n_vocab * n_tokens);
-            memcpy(logits_out.data(), (float *) ggml_get_data(res), sizeof(float)*n_vocab*n_tokens);
-        } else {
-            logits_out.resize(n_vocab);
-            memcpy(logits_out.data(), (float *) ggml_get_data(res) + (n_vocab*(n_tokens - 1)), sizeof(float)*n_vocab);
         }
+
+        // extract embeddings
+        if (!lctx.embedding.empty()) {
+            auto & embedding_out = lctx.embedding;
+
+            embedding_out.resize(n_embd);
+            memcpy(embedding_out.data(), (float *) ggml_get_data(embeddings) + (n_embd*(n_tokens - 1)), sizeof(float)*n_embd);
+        }
+
+        // measure the performance only for the single-token evals
+        if (n_tokens == 1) {
+            lctx.t_eval_us += ggml_time_us() - t_start_us;
+            lctx.n_eval++;
+        }
+        else if (n_tokens > 1) {
+            lctx.t_p_eval_us += ggml_time_us() - t_start_us;
+            lctx.n_p_eval += n_tokens;
+        }
+
+        // get a more accurate load time, upon first eval
+        // TODO: fix this
+        if (!lctx.has_evaluated_once) {
+            lctx.t_load_us = ggml_time_us() - lctx.t_start_us;
+            lctx.has_evaluated_once = true;
+        }
+            return gf;
+
+    }
+    return nullptr;
+}
+
+// decode a batch of tokens by evaluating the transformer
+//
+//   - lctx:      llama context
+//   - batch:     batch to evaluate
+//
+// return 0 on success
+// return positive int on warning
+// return negative int on error
+//
+static int llama_decode_internal(
+        llama_context & lctx,
+        llama_batch   batch) {
+    struct ggml_cgraph * gf = llama_decode_internal_phased(lctx, batch, 0, nullptr);
+    if (gf != nullptr) {
+        return llama_decode_internal_phased(lctx, batch, 1, gf) != nullptr;
+    } else {
+        printf("Graph is null\n");
+        return -1;
+    }
+}
+
+struct ggml_cgraph * llama_start_async_decode(
+        llama_context & lctx,
+        llama_batch   batch) {
+    return llama_decode_internal_phased(lctx, batch, 0, nullptr);
+
+}
+
+int llama_finish_async_decode(
+        struct llama_context & lctx,
+        struct llama_batch   batch,
+        struct ggml_cgraph * cgraph) {
+
+    int ret;
+    if (cgraph != nullptr) {
+
+        ret = llama_decode_internal_phased(lctx, batch, 1, cgraph) != nullptr;
+    } else {
+        ret = -1;
     }
 
-    // extract embeddings
-    if (!lctx.embedding.empty()) {
-        auto & embedding_out = lctx.embedding;
+    return ret;
 
-        embedding_out.resize(n_embd);
-        memcpy(embedding_out.data(), (float *) ggml_get_data(embeddings) + (n_embd*(n_tokens - 1)), sizeof(float)*n_embd);
-    }
-
-    // measure the performance only for the single-token evals
-    if (n_tokens == 1) {
-        lctx.t_eval_us += ggml_time_us() - t_start_us;
-        lctx.n_eval++;
-    }
-    else if (n_tokens > 1) {
-        lctx.t_p_eval_us += ggml_time_us() - t_start_us;
-        lctx.n_p_eval += n_tokens;
-    }
-
-    // get a more accurate load time, upon first eval
-    // TODO: fix this
-    if (!lctx.has_evaluated_once) {
-        lctx.t_load_us = ggml_time_us() - lctx.t_start_us;
-        lctx.has_evaluated_once = true;
-    }
-
-    return 0;
 }
 
 //

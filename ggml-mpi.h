@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 struct ggml_context;
 struct ggml_tensor;
@@ -31,6 +32,12 @@ struct ggml_mpi_context;
  * any MPI operations.
  */
 void ggml_mpi_backend_init(void);
+
+bool ggml_mpi_is_decoding(struct ggml_mpi_context * ctx_mpi);
+
+void ggml_mpi_graph_creation_post(struct ggml_mpi_context * ctx_mpi, struct ggml_cgraph * cgraph, int   n_layers);
+
+void ggml_mpi_wait_recv(struct ggml_mpi_context * ctx_mpi);
 
 /**
  * Frees the MPI backend, must be called only once at termination
@@ -199,8 +206,7 @@ void ggml_mpi_scatter_layers(
  */
 void ggml_mpi_graph_compute_pre(
         struct ggml_mpi_context * ctx_mpi,
-             struct ggml_cgraph * gf,
-                            int   n_layers);
+             struct ggml_cgraph * gf);
 
 /**
  * Sends the output tensor to the next node for processing
@@ -212,8 +218,7 @@ void ggml_mpi_graph_compute_pre(
  */
 void ggml_mpi_graph_compute_post(
         struct ggml_mpi_context * ctx_mpi,
-             struct ggml_cgraph * gf,
-                            int   n_layers);
+             struct ggml_cgraph * gf);
 
 #ifdef __cplusplus
 }

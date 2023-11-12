@@ -276,7 +276,14 @@ extern "C" {
 
     LLAMA_API void llama_swap_comm(struct llama_context * ctx);
 
-    LLAMA_API void llama_sync_token(struct llama_context * ctx, llama_token * token, int root);\
+    LLAMA_API void llama_sync_token(struct llama_context * ctx, llama_token * token, int root);
+
+    LLAMA_API struct ggml_cgraph * llama_start_async_decode(struct llama_context & lctx,
+                                                                   struct llama_batch   batch);
+
+    LLAMA_API int llama_finish_async_decode(struct llama_context & lctx,
+                                                                    struct llama_batch   batch,
+                                                                    struct ggml_cgraph * cgraph);
 
     LLAMA_API void llama_sync_token_data(struct llama_context * ctx, llama_token_data * data, int root);
 

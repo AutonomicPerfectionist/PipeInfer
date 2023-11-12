@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -18,6 +19,17 @@ struct ggml_mpi_context {
     int layer_start;
     int layer_end;
     MPI_Status status;
+    MPI_Request asyncSendRequest;
+    struct ggml_tensor * duped_send_tensor;
+    MPI_Request asyncRecvRequest;
+    struct ggml_tensor * duped_recv_tensor;
+    bool asyncSendWaiting;
+    bool asyncRecvWaiting;
+    struct ggml_cgraph * cgraph;
+    bool async;
+    bool running_decode;
+    bool res;
+    bool embed;
 };
 
 void ggml_mpi_sync_pipelined(
@@ -43,6 +55,10 @@ struct ggml_mpi_context * ggml_mpi_init(void) {
     MPI_Comm_rank(MPI_COMM_WORLD, &ctx->rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ctx->size);
     ctx->comm = MPI_COMM_WORLD;
+    ctx->asyncSendWaiting = false;
+    ctx->asyncRecvWaiting = false;
+    ctx->running_decode = false;
+    ctx->async = false;
 //    ctx->status = *MPI_STATUS_IGNORE;
 
     return ctx;
@@ -71,6 +87,18 @@ void ggml_mpi_free(struct ggml_mpi_context * ctx) {
     ggml_mpi_sync_pipelined(ctx, NULL, 0, MPI_INT8_T, 6);
     MPI_Comm_free(&(ctx->comm));
     free(ctx);
+}
+
+bool ggml_mpi_is_decoding(struct ggml_mpi_context * ctx_mpi) {
+    return ctx_mpi->running_decode;
+}
+
+struct ggml_cgraph * ggml_mpi_get_cgraph(struct ggml_mpi_context * ctx_mpi) {
+    return ctx_mpi->cgraph;
+}
+
+void ggml_mpi_set_cgraph(struct ggml_mpi_context * ctx_mpi, struct ggml_cgraph * cgraph) {
+    ctx_mpi->cgraph = cgraph;
 }
 
 int ggml_mpi_rank(struct ggml_mpi_context * ctx) {
@@ -233,9 +261,19 @@ static int ggml_graph_get_node_idx(struct ggml_cgraph * gf, const char * name) {
     return -1;
 }
 
+struct ggml_tensor * ggml_mpi_dup_tensor(struct ggml_tensor * t) {
+    struct ggml_tensor * duped = malloc(sizeof(struct ggml_tensor));
+    for (int i = 0; i < 4; i++) {
+        duped->ne[i] = t->ne[i];
+    }
+    size_t data_size = ggml_element_size(t) * ggml_nelements(t);
+    duped->data = malloc(data_size);
+    memcpy(duped->data, t->data, data_size);
+    return duped;
+}
 
-static void ggml_mpi_tensor_send(struct ggml_tensor * t, int mpi_rank_dst, MPI_Comm comm) {
-    if(comm == MPI_COMM_NULL) {
+static void ggml_mpi_tensor_send(struct ggml_mpi_context * ctx_mpi, struct ggml_tensor * t, int mpi_rank_dst) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
         return;
     }
     MPI_Datatype mpi_type;
@@ -246,12 +284,51 @@ static void ggml_mpi_tensor_send(struct ggml_tensor * t, int mpi_rank_dst, MPI_C
         default: GGML_ASSERT(false && "not implemented");
     }
 
-    const int retval = MPI_Send(t->data, ggml_nelements(t), mpi_type, mpi_rank_dst, 0, comm);
+    if (ctx_mpi->asyncSendWaiting) {
+        MPI_Wait(&(ctx_mpi->asyncSendRequest), MPI_STATUS_IGNORE);
+        ctx_mpi->asyncSendWaiting = false;
+        free(ctx_mpi->duped_send_tensor->data);
+        free(ctx_mpi->duped_send_tensor);
+    }
+    ctx_mpi->duped_send_tensor = ggml_mpi_dup_tensor(t);
+    ctx_mpi->asyncSendWaiting = true;
+
+    const int retval = MPI_Isend(ctx_mpi->duped_send_tensor->data, ggml_nelements(ctx_mpi->duped_send_tensor), mpi_type, mpi_rank_dst, 0, ctx_mpi->comm, &(ctx_mpi->asyncSendRequest));
     GGML_ASSERT(retval == MPI_SUCCESS);
 }
 
-static void ggml_mpi_tensor_recv(struct ggml_tensor * t, int mpi_rank_src, MPI_Comm comm) {
-    if(comm == MPI_COMM_NULL) {
+static void ggml_mpi_tensor_recv(struct ggml_mpi_context * ctx_mpi, struct ggml_tensor * t, int mpi_rank_src) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+    MPI_Datatype mpi_type;
+
+    switch (t->type) {
+        case GGML_TYPE_I32: mpi_type = MPI_INT32_T; break;
+        case GGML_TYPE_F32: mpi_type = MPI_FLOAT;   break;
+        default: GGML_ASSERT(false && "not implemented");
+    }
+    const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 0, ctx_mpi->comm, MPI_STATUS_IGNORE);
+    GGML_ASSERT(retval == MPI_SUCCESS);
+}
+
+void ggml_mpi_wait_recv(struct ggml_mpi_context * ctx_mpi) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+    if (ctx_mpi->asyncRecvWaiting) {
+        MPI_Wait(&(ctx_mpi->asyncRecvRequest), MPI_STATUS_IGNORE);
+        ctx_mpi->asyncRecvWaiting = false;
+    }
+}
+
+struct ggml_tensor * ggml_mpi_async_received_tensor(struct ggml_mpi_context * ctx_mpi) {
+    ggml_mpi_wait_recv(ctx_mpi);
+    return ctx_mpi->duped_recv_tensor;
+}
+
+static void ggml_mpi_async_tensor_recv(struct ggml_mpi_context * ctx_mpi, struct ggml_tensor * t, int mpi_rank_src) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
         return;
     }
     MPI_Datatype mpi_type;
@@ -262,7 +339,11 @@ static void ggml_mpi_tensor_recv(struct ggml_tensor * t, int mpi_rank_src, MPI_C
         default: GGML_ASSERT(false && "not implemented");
     }
 
-    const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
+    ggml_mpi_wait_recv(ctx_mpi);
+//    ctx_mpi->duped_recv_tensor = t;
+    ctx_mpi->asyncRecvWaiting = true;
+    const int retval = MPI_Irecv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 0, ctx_mpi->comm, &(ctx_mpi->asyncRecvRequest));
+
     GGML_ASSERT(retval == MPI_SUCCESS);
 }
 
@@ -330,11 +411,15 @@ void ggml_mpi_scatter_layers(
     fprintf(stderr, "Ranges for rank %d: [%d, %d]\n", ctx_mpi->rank, ctx_mpi->layer_start, ctx_mpi->layer_end);
 }
 
+void ggml_set_async(struct ggml_mpi_context * ctx_mpi, bool async) {
+    ctx_mpi->async = async;
+}
+
 // TODO: there are many improvements that can be done to this implementation
-void ggml_mpi_graph_compute_pre(
+void ggml_mpi_graph_creation_post(
         struct ggml_mpi_context * ctx_mpi,
              struct ggml_cgraph * gf,
-                            int   n_layers) {
+                     const int n_layers) {
     const int mpi_rank = ctx_mpi->rank;
     const int mpi_size = ctx_mpi->size;
 
@@ -369,83 +454,105 @@ void ggml_mpi_graph_compute_pre(
     if (mpi_rank > 0) {
         if (mpi_rank == 1) {
             // the first node (1) receives the input tokens from the main node (0)
-            ggml_mpi_tensor_recv(inp_tokens, 0, ctx_mpi->comm);
+            ggml_mpi_tensor_recv(ctx_mpi, inp_tokens, 0);
         } else {
             // recv input data for each node into the "inp0" tensor (i.e. the first node in the compute graph)
-            ggml_mpi_tensor_recv(inp0, mpi_rank - 1, ctx_mpi->comm);
+            ggml_mpi_tensor_recv(ctx_mpi, inp0, mpi_rank - 1);
         }
     } else if (mpi_size > 1) {
         // node 0 sends the input tokens to node 1
-        ggml_mpi_tensor_send(inp_tokens, 1, ctx_mpi->comm);
-
         // recv the output data from the last node
-        ggml_mpi_tensor_recv(inp0, mpi_size - 1, ctx_mpi->comm);
+        ggml_mpi_tensor_send(ctx_mpi, inp_tokens, 1);
+        ggml_mpi_tensor_recv(ctx_mpi, inp0, mpi_size - 1);
     }
 
+    //const int n_per_node = (n_layers + (mpi_size - 1)) / mpi_size;
+
+    const int mpi_idx = mpi_rank > 0 ? mpi_rank - 1 : mpi_size - 1;
+
+    //const int il0 =               (mpi_idx + 0) * n_per_node;
+    //const int il1 = MIN(n_layers, (mpi_idx + 1) * n_per_node);
+    int il0 = ctx_mpi->layer_start;
+    int il1 = MIN(n_layers, ctx_mpi->layer_end);
+
+    char name_l0[GGML_MAX_NAME];
+    char name_l1[GGML_MAX_NAME];
+
+    snprintf(name_l0, sizeof(name_l0), "layer_inp_%d", il0);
+    snprintf(name_l1, sizeof(name_l1), "layer_inp_%d", il1);
+
+    const int idx_l0 =                ggml_graph_get_node_idx(gf, name_l0);
+    const int idx_l1 = mpi_rank > 0 ? ggml_graph_get_node_idx(gf, name_l1) + 1 : gf->n_nodes;
+
+    struct ggml_tensor *res = gf->nodes[gf->n_nodes - 1];
+    struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
+
+    if (idx_l0 < 0 || idx_l1 < 0) {
+        fprintf(stderr, "%s: layer input nodes not found\n", __func__);
+        return;
+    }
+
+    // attach the input data to all nodes that need it
+    // TODO: not great - should be able to do this without modifying the compute graph (see next TODO below)
+    for (int i = idx_l0; i < idx_l1; i++) {
+        if (gf->nodes[i]->src[0] == gf->nodes[idx_l0]) {
+            gf->nodes[i]->src[0] =  inp0;
+        }
+        if (gf->nodes[i]->src[1] == gf->nodes[idx_l0]) {
+            gf->nodes[i]->src[1] =  inp0;
+        }
+    }
+
+    // TODO: instead of rearranging the nodes, we should be able to execute a subset of the compute graph
+    for (int i = 1; i < idx_l1 - idx_l0; i++) {
+        gf->nodes[i] = gf->nodes[idx_l0 + i];
+        gf->grads[i] = gf->grads[idx_l0 + i];
+    }
+
+    // the first node performs the "get_rows" operation, the rest of the nodes get the data from the previous node
+    if (mpi_idx != 0) {
+        gf->nodes[0]->op = GGML_OP_NONE;
+    }
+
+    gf->n_nodes = idx_l1 - idx_l0;
+
+
+}
+
+void ggml_mpi_graph_compute_pre(struct ggml_mpi_context * ctx_mpi, struct ggml_cgraph * gf) {
+    const int mpi_rank = ctx_mpi->rank;
+    const int mpi_size = ctx_mpi->size;
+
+    struct ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
+    if (inp_tokens == NULL) {
+        fprintf(stderr, "%s: tensor 'inp_tokens' not found\n", __func__);
+        return;
+    }
+
+    struct ggml_tensor * inp0 = ggml_graph_get_tensor(gf, "layer_inp_0");
+    if (inp0 == NULL) {
+        fprintf(stderr, "%s: tensor 'inp0' not found\n", __func__);
+        return;
+    }
+
+    GGML_ASSERT(inp0 == gf->nodes[0]);
     {
-
-
-        //const int n_per_node = (n_layers + (mpi_size - 1)) / mpi_size;
-
-        const int mpi_idx = mpi_rank > 0 ? mpi_rank - 1 : mpi_size - 1;
-
-        //const int il0 =               (mpi_idx + 0) * n_per_node;
-        //const int il1 = MIN(n_layers, (mpi_idx + 1) * n_per_node);
-        int il0 = ctx_mpi->layer_start;
-        int il1 = MIN(n_layers, ctx_mpi->layer_end);
-
-        char name_l0[GGML_MAX_NAME];
-        char name_l1[GGML_MAX_NAME];
-
-        snprintf(name_l0, sizeof(name_l0), "layer_inp_%d", il0);
-        snprintf(name_l1, sizeof(name_l1), "layer_inp_%d", il1);
-
-        const int idx_l0 =                ggml_graph_get_node_idx(gf, name_l0);
-        const int idx_l1 = mpi_rank > 0 ? ggml_graph_get_node_idx(gf, name_l1) + 1 : gf->n_nodes;
-
-        if (idx_l0 < 0 || idx_l1 < 0) {
-            fprintf(stderr, "%s: layer input nodes not found\n", __func__);
-            return;
+        if (mpi_rank == 0 && mpi_size > 1) {
+//            ggml_mpi_wait_recv(ctx_mpi);
         }
 
-        // attach the input data to all nodes that need it
-        // TODO: not great - should be able to do this without modifying the compute graph (see next TODO below)
-        for (int i = idx_l0; i < idx_l1; i++) {
-            if (gf->nodes[i]->src[0] == gf->nodes[idx_l0]) {
-                gf->nodes[i]->src[0] =  inp0;
-            }
-            if (gf->nodes[i]->src[1] == gf->nodes[idx_l0]) {
-                gf->nodes[i]->src[1] =  inp0;
-            }
-        }
-
-        // TODO: instead of rearranging the nodes, we should be able to execute a subset of the compute graph
-        for (int i = 1; i < idx_l1 - idx_l0; i++) {
-            gf->nodes[i] = gf->nodes[idx_l0 + i];
-            gf->grads[i] = gf->grads[idx_l0 + i];
-        }
-
-        // the first node performs the "get_rows" operation, the rest of the nodes get the data from the previous node
-        if (mpi_idx != 0) {
-            gf->nodes[0]->op = GGML_OP_NONE;
-        }
-
-        gf->n_nodes = idx_l1 - idx_l0;
 
     }
 }
 
 void ggml_mpi_graph_compute_post(
         struct ggml_mpi_context * ctx_mpi,
-             struct ggml_cgraph * gf,
-                            int   n_layers) {
-    UNUSED(n_layers);
+             struct ggml_cgraph * gf) {
 
     const int mpi_rank = ctx_mpi->rank;
-    const int mpi_size = ctx_mpi->size;
 
     // send the output data to the next node
     if (mpi_rank > 0) {
-        ggml_mpi_tensor_send(gf->nodes[gf->n_nodes - 1], ggml_mpi_next_node(ctx_mpi), ctx_mpi->comm);
+        ggml_mpi_tensor_send(ctx_mpi, gf->nodes[gf->n_nodes - 1], ggml_mpi_next_node(ctx_mpi));
     }
 }

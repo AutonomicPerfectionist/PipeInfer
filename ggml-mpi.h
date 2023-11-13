@@ -204,7 +204,7 @@ void ggml_mpi_scatter_layers(
  * @param gf The compute graph to modify
  * @param n_layers The number of layers in the model, used as an upper bound in the layer ranges.
  */
-void ggml_mpi_graph_compute_pre(
+bool ggml_mpi_graph_compute_pre(
         struct ggml_mpi_context * ctx_mpi,
              struct ggml_cgraph * gf);
 

@@ -5562,7 +5562,9 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
 
 #ifdef GGML_USE_MPI
-        ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf);
+        if (!ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf)) {
+            return nullptr;
+        }
 #endif
 
         // LLAMA_LOG_INFO("graph build time: %.3f ms (%d nodes, %d leafs)\n", (ggml_time_us() - t_start_us)/1000.0, gf->n_nodes, gf->n_leafs);

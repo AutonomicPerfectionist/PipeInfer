@@ -412,9 +412,6 @@ void ggml_mpi_scatter_layers(
     fprintf(stderr, "Ranges for rank %d: [%d, %d]\n", ctx_mpi->rank, ctx_mpi->layer_start, ctx_mpi->layer_end);
 }
 
-void ggml_set_async(struct ggml_mpi_context * ctx_mpi, bool async) {
-    ctx_mpi->async = async;
-}
 
 // TODO: there are many improvements that can be done to this implementation
 void ggml_mpi_graph_creation_post(
@@ -464,7 +461,7 @@ void ggml_mpi_graph_creation_post(
         // node 0 sends the input tokens to node 1
         // recv the output data from the last node
         ggml_mpi_tensor_send(ctx_mpi, inp_tokens, 1);
-        ggml_mpi_tensor_recv(ctx_mpi, inp0, mpi_size - 1);
+        ggml_mpi_async_tensor_recv(ctx_mpi, inp0, mpi_size - 1);
     }
 
     //const int n_per_node = (n_layers + (mpi_size - 1)) / mpi_size;
@@ -520,30 +517,35 @@ void ggml_mpi_graph_creation_post(
 
 }
 
-void ggml_mpi_graph_compute_pre(struct ggml_mpi_context * ctx_mpi, struct ggml_cgraph * gf) {
+bool ggml_mpi_graph_compute_pre(struct ggml_mpi_context * ctx_mpi, struct ggml_cgraph * gf) {
+    if (ctx_mpi->comm == MPI_COMM_NULL) {
+        return false;
+    }
+
     const int mpi_rank = ctx_mpi->rank;
     const int mpi_size = ctx_mpi->size;
 
     struct ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
     if (inp_tokens == NULL) {
         fprintf(stderr, "%s: tensor 'inp_tokens' not found\n", __func__);
-        return;
+        return false;
     }
 
     struct ggml_tensor * inp0 = ggml_graph_get_tensor(gf, "layer_inp_0");
     if (inp0 == NULL) {
         fprintf(stderr, "%s: tensor 'inp0' not found\n", __func__);
-        return;
+        return false;
     }
 
     GGML_ASSERT(inp0 == gf->nodes[0]);
     {
         if (mpi_rank == 0 && mpi_size > 1) {
-//            ggml_mpi_wait_recv(ctx_mpi);
+            ggml_mpi_wait_recv(ctx_mpi);
         }
 
 
     }
+    return true;
 }
 
 void ggml_mpi_graph_compute_post(

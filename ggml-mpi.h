@@ -137,7 +137,7 @@ size_t ggml_mpi_size(struct ggml_mpi_context * ctx);
  * @param seq_id A pointer to the seq_id 2D array, which will be synchronized after this function.
  * @param logits A pointer to the logits array, which is unused currently since only node 0 needs them.
  */
-void ggml_mpi_eval_init(
+bool ggml_mpi_eval_init(
         struct ggml_mpi_context *   ctx_mpi,
                 int32_t         *   n_tokens,
                 int32_t         **  pos,

@@ -5497,7 +5497,9 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 
 #ifdef GGML_USE_MPI
         // TODO: needs fix after #3228
-        ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits));
+        if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits))) {
+            return nullptr;
+        }
         n_tokens = batch.n_tokens;
 #endif
         if (!llama_kv_cache_find_slot(kv_self, batch)) {

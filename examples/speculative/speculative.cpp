@@ -376,6 +376,7 @@ int main(int argc, char ** argv) {
 
                 llama_sampling_sample(drafts[s].ctx_sampling, ctx_dft, NULL, drafts[s].i_batch_dft);
 
+                // Swap back to pipeline roots
                 llama_swap_comm(ctx_dft);
                 llama_sync_token(ctx_dft, &(drafts[s].i_batch_dft), 1);
 
@@ -387,6 +388,7 @@ int main(int argc, char ** argv) {
                             k, s, i, cur_p[k].id, cur_p[k].p, llama_token_to_piece(ctx_dft, cur_p[k].id).c_str());
                 }
 
+                // Back to draft pipeline only
                 llama_swap_comm(ctx_dft);
 
 
@@ -489,7 +491,7 @@ int main(int argc, char ** argv) {
             ++n_past_tgt;
         }
 
-        // the first token is always proposed by the traget model before the speculation loop so we erase it here
+        // the first token is always proposed by the target model before the speculation loop so we erase it here
         for (int s = 0; s < n_seq_dft; ++s) {
             if (!drafts[s].active) {
                 continue;

@@ -143,7 +143,7 @@ void ggml_mpi_sync_pipelined(
     }
 }
 
-void ggml_mpi_eval_init(
+bool ggml_mpi_eval_init(
         struct ggml_mpi_context *   ctx_mpi,
                 int32_t         *   n_tokens,
                 int32_t         **  pos,
@@ -151,7 +151,7 @@ void ggml_mpi_eval_init(
                 int32_t         *** seq_id,
                 int8_t          **  logits) {
     if(ctx_mpi->comm == MPI_COMM_NULL) {
-        return;
+        return false;
     }
     int32_t old_n_tokens = *n_tokens;
 
@@ -211,6 +211,7 @@ void ggml_mpi_eval_init(
     free(flattened_seq_ids);
     //free(*seq_id); // <- something is still holding onto this, need to investigate
     *seq_id = new_seq_id;
+    return true;
 }
 
 void ggml_mpi_sync_ints_pipelined(

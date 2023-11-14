@@ -327,6 +327,7 @@ int main(int argc, char ** argv) {
 
             llama_batch_clear(batch_tgt);
             llama_batch_add  (batch_tgt, id, n_past_tgt, { 0 }, true);
+            // batch_tgt.n_tokens = 1
 
 
             for (int s = 0; s < n_seq_dft; ++s) {
@@ -405,14 +406,16 @@ int main(int argc, char ** argv) {
 
                 auto & cur_p = drafts[s].ctx_sampling->cur;
 
+                llama_sync_token_data(ctx_dft, &(cur_p[0]), 1);
+
                 for (int k = 0; k < std::min(n_seq_dft + 3, (int) cur_p.size()); ++k) {
-                    llama_sync_token_data(ctx_dft, &(cur_p[k]), 1);
                     LOG(" - draft candidate %3d for seq %3d, pos %3d: %6d (%8.3f) '%s'\n",
                             k, s, i, cur_p[k].id, cur_p[k].p, llama_token_to_piece(ctx_dft, cur_p[k].id).c_str());
                 }
 
-                // Back to draft pipeline only
-                llama_swap_comm(ctx_dft);
+
+
+
 
 
                 if (cur_p[0].p < p_accept) {
@@ -420,6 +423,14 @@ int main(int argc, char ** argv) {
                     drafts[s].drafting = false;
                     continue;
                 }
+
+                // TODO investigate potential bottleneck
+                for (int k = 1; k < 8; ++k) {
+                    llama_sync_token_data(ctx_dft, &(cur_p[k]), 1);
+                }
+
+                // Back to draft pipeline only
+                llama_swap_comm(ctx_dft);
 
                 std::vector<int> sa(1, s);
 

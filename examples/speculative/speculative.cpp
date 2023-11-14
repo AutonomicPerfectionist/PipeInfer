@@ -204,7 +204,7 @@ int main(int argc, char ** argv) {
     }
 
     llama_batch batch_dft = llama_batch_init(params.n_ctx, 0, 1);
-    llama_batch batch_tgt = llama_batch_init(params.n_ctx, 0, n_seq_dft);
+    llama_batch batch_tgt = llama_batch_init(params.n_ctx, 0, n_seq_dft + 1);
 
     std::deque<struct ggml_cgraph *> dft_cgraphs;
     std::deque<struct seq_async_run> tgt_cgraphs;
@@ -237,7 +237,7 @@ int main(int argc, char ** argv) {
             struct ggml_cgraph * cgraph = run.cgraph;
 //            batch_tgt = run.batch;
             n_past_tgt = run.n_past_tgt;
-//            n_past_dft = run.n_past_dft;
+            n_past_dft = run.n_past_dft;
 //            s_keep = run.s_keep;
             llama_finish_async_decode(*ctx_tgt, batch_tgt, cgraph);
             tgt_cgraphs.pop_back();
@@ -253,6 +253,8 @@ int main(int argc, char ** argv) {
 
             // Swap to pipeline roots
             llama_swap_comm(ctx_tgt);
+            LOG("Swapped comm to pipeline roots, id %d\n", llama_node_id(ctx_tgt));
+
             llama_sync_token(ctx_tgt, &id, 0);
 
 
@@ -269,6 +271,8 @@ int main(int argc, char ** argv) {
 
             // Switch back to target pipeline only
             llama_swap_comm(ctx_tgt);
+            LOG("Swapped comm to target only, id %d\n", llama_node_id(ctx_tgt));
+
 
             // We can start the target pipeline now without needing to wait for speculation
 //            tgt_cgraphs.push_front(llama_start_async_decode(*ctx_tgt, batch_tgt));
@@ -326,9 +330,31 @@ int main(int argc, char ** argv) {
             }
 
             llama_batch_clear(batch_tgt);
-            llama_batch_add  (batch_tgt, id, n_past_tgt, { 0 }, true);
+            llama_batch_add  (batch_tgt, id, n_past_tgt, { n_seq_dft+1 }, true);
             // batch_tgt.n_tokens = 1
 
+//            llama_kv_cache_seq_rm  (ctx_tgt, n_seq_dft+1, -1, -1);
+            llama_kv_cache_seq_cp  (ctx_tgt, 0, n_seq_dft+1, -1, -1);
+            llama_kv_cache_seq_keep(ctx_tgt, n_seq_dft+1); // NEEDED for some reason
+
+
+            struct seq_async_run run;
+            run.s_keep = s_keep;
+            run.drafts = drafts;
+            run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
+            llama_finish_async_decode(*ctx_tgt, batch_tgt, run.cgraph);
+            run.n_past_tgt = n_past_tgt;
+            run.n_past_dft = n_past_dft;
+            run.batch = batch_tgt;
+//            tgt_cgraphs.push_front(run);
+
+            llama_kv_cache_seq_rm  (ctx_tgt, n_seq_dft+1, n_past_tgt, -1);
+
+            llama_kv_cache_seq_cp  (ctx_tgt, n_seq_dft+1, 0, -1, -1);
+            llama_kv_cache_seq_keep(ctx_tgt, 0);
+
+            llama_batch_clear(batch_tgt);
+            llama_batch_add  (batch_tgt, id, n_past_tgt, { 0 }, true);
 
             for (int s = 0; s < n_seq_dft; ++s) {
                 drafts[s].active = false;
@@ -402,11 +428,21 @@ int main(int argc, char ** argv) {
 
                 // Swap back to pipeline roots
                 llama_swap_comm(ctx_dft);
+                LOG("Swapped comm to pipeline roots, id %d\n", llama_node_id(ctx_dft));
+
                 llama_sync_token(ctx_dft, &(drafts[s].i_batch_dft), 1);
 
                 auto & cur_p = drafts[s].ctx_sampling->cur;
 
                 llama_sync_token_data(ctx_dft, &(cur_p[0]), 1);
+                // TODO investigate potential bottleneck
+                for (int k = 1; k < 8; ++k) {
+                    llama_sync_token_data(ctx_dft, &(cur_p[k]), 1);
+                }
+
+                // Back to draft pipeline only
+                llama_swap_comm(ctx_dft);
+                LOG("Swapped comm to draft only, id %d\n", llama_node_id(ctx_dft));
 
                 for (int k = 0; k < std::min(n_seq_dft + 3, (int) cur_p.size()); ++k) {
                     LOG(" - draft candidate %3d for seq %3d, pos %3d: %6d (%8.3f) '%s'\n",
@@ -424,13 +460,8 @@ int main(int argc, char ** argv) {
                     continue;
                 }
 
-                // TODO investigate potential bottleneck
-                for (int k = 1; k < 8; ++k) {
-                    llama_sync_token_data(ctx_dft, &(cur_p[k]), 1);
-                }
 
-                // Back to draft pipeline only
-                llama_swap_comm(ctx_dft);
+
 
                 std::vector<int> sa(1, s);
 

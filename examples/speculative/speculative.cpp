@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <stdint.h>
 
 
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  100
@@ -27,6 +28,12 @@ struct seq_draft {
 struct seq_async_run {
     struct ggml_cgraph * cgraph;
     struct llama_batch batch;
+    int n_past_tgt;
+    int n_past_dft;
+    int s_keep;
+    std::vector<seq_draft> drafts;
+    llama_sampling_context * ctx_sampling;
+    uint8_t * state;
 };
 
 int main(int argc, char ** argv) {
@@ -200,7 +207,7 @@ int main(int argc, char ** argv) {
     llama_batch batch_tgt = llama_batch_init(params.n_ctx, 0, n_seq_dft);
 
     std::deque<struct ggml_cgraph *> dft_cgraphs;
-    std::deque<struct ggml_cgraph *> tgt_cgraphs;
+    std::deque<struct seq_async_run> tgt_cgraphs;
 
     const auto t_dec_start = ggml_time_us();
 
@@ -223,13 +230,23 @@ int main(int argc, char ** argv) {
         int i_dft  = 0;
         int s_keep = 0;
 
+        if (!tgt_cgraphs.empty()) {
+            struct seq_async_run run = tgt_cgraphs.back();
+//            llama_set_state_data(ctx_tgt, run.state);
+//            drafts = run.drafts;
+            struct ggml_cgraph * cgraph = run.cgraph;
+//            batch_tgt = run.batch;
+            n_past_tgt = run.n_past_tgt;
+//            n_past_dft = run.n_past_dft;
+//            s_keep = run.s_keep;
+            llama_finish_async_decode(*ctx_tgt, batch_tgt, cgraph);
+            tgt_cgraphs.pop_back();
+        }
+
         while (true) {
             LOG("sampling target: s_keep = %3d, i_dft = %3d, i_batch_tgt = %3d\n", s_keep, i_dft, drafts[s_keep].i_batch_tgt[i_dft]);
 
-            if (!tgt_cgraphs.empty()) {
-                llama_finish_async_decode(*ctx_tgt, batch_tgt, tgt_cgraphs.back());
-                tgt_cgraphs.pop_back();
-            }
+
 
             // sample from the target model
             llama_token id = llama_sampling_sample(ctx_sampling, ctx_tgt, NULL, drafts[s_keep].i_batch_tgt[i_dft]);
@@ -308,6 +325,10 @@ int main(int argc, char ** argv) {
                 llama_kv_cache_seq_keep(ctx_tgt, 0);
             }
 
+            llama_batch_clear(batch_tgt);
+            llama_batch_add  (batch_tgt, id, n_past_tgt, { 0 }, true);
+
+
             for (int s = 0; s < n_seq_dft; ++s) {
                 drafts[s].active = false;
                 drafts[s].tokens.clear();
@@ -319,8 +340,11 @@ int main(int argc, char ** argv) {
 
             llama_batch_clear(batch_dft);
             llama_batch_add  (batch_dft, id, n_past_dft, { 0 }, true);
+            // batch_dft.n_tokens == 1 now
 
             // Pipeline sync on draft pipeline
+
+            // Remove all tokens from all sequences after n_past_dft
             llama_kv_cache_seq_rm(ctx_dft, -1, n_past_dft, -1);
 
             // Kick off drafting pipeline but don't need it just yet
@@ -350,8 +374,7 @@ int main(int argc, char ** argv) {
         drafts[0].drafting    = true;
         drafts[0].i_batch_dft = 0;
 
-        llama_batch_clear(batch_tgt);
-        llama_batch_add  (batch_tgt, drafts[0].tokens[0], n_past_tgt, { 0 }, true);
+
 
         // We need the draft now, so wait for it
         if (!dft_cgraphs.empty()) {
@@ -486,12 +509,41 @@ int main(int argc, char ** argv) {
                 llama_kv_cache_seq_cp(ctx_tgt, 0, s, -1, -1);
             }
 
-            // LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
-            tgt_cgraphs.push_front(llama_start_async_decode(*ctx_tgt, batch_tgt));
             ++n_past_tgt;
+
+
+            // LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
+            struct seq_async_run run;
+            run.state = (uint8_t *)malloc(llama_get_state_size(ctx_tgt));
+            llama_copy_state_data(ctx_tgt, run.state);
+            run.s_keep = s_keep;
+            run.drafts = drafts;
+            run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
+            run.n_past_tgt = n_past_tgt;
+            run.n_past_dft = n_past_dft;
+            run.batch = batch_tgt;
+            tgt_cgraphs.push_front(run);
+
         }
 
-        // the first token is always proposed by the target model before the speculation loop so we erase it here
+//        llama_kv_cache_seq_keep(ctx_tgt, 0);
+//        for (int s = 1; s < n_seq_dft; ++s) {
+//            llama_kv_cache_seq_cp(ctx_tgt, 0, s, -1, -1);
+//        }
+
+        // We can start the target pipeline now without needing to wait for speculation
+//        struct seq_async_run run;
+//        run.state = (uint8_t *)malloc(llama_get_state_size(ctx_tgt));
+//        llama_copy_state_data(ctx_tgt, run.state);
+//        run.s_keep = s_keep;
+//        run.drafts = drafts;
+//        run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
+//        run.n_past_tgt = n_past_tgt;
+//        run.n_past_dft = n_past_dft;
+//        run.batch = batch_tgt;
+//
+//        tgt_cgraphs.push_front(run);
+
         for (int s = 0; s < n_seq_dft; ++s) {
             if (!drafts[s].active) {
                 continue;

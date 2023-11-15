@@ -9054,9 +9054,6 @@ void llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llam
 }
 
 void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
-    if (seq_id_src == seq_id_dst) {
-        return;
-    }
 #ifdef GGML_USE_MPI
     int32_t vals[4] = {seq_id_src, seq_id_dst, p0, p1};
     ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 4, 3);
@@ -9065,6 +9062,10 @@ void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, 
     p0 = vals[2];
     p1 = vals[3];
 #endif
+    if (seq_id_src == seq_id_dst) {
+        return;
+    }
+
     llama_kv_cache_seq_cp(ctx->kv_self, seq_id_src, seq_id_dst, p0, p1);
 }
 

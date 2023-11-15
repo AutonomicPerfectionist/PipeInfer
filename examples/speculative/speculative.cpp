@@ -27,13 +27,6 @@ struct seq_draft {
 
 struct seq_async_run {
     struct ggml_cgraph * cgraph;
-    struct llama_batch batch;
-    int n_past_tgt;
-    int n_past_dft;
-    int s_keep;
-    std::vector<seq_draft> drafts;
-    llama_sampling_context * ctx_sampling;
-    uint8_t * state;
 };
 
 int main(int argc, char ** argv) {
@@ -233,13 +226,7 @@ int main(int argc, char ** argv) {
 
         if (!tgt_cgraphs.empty()) {
             struct seq_async_run run = tgt_cgraphs.back();
-//            llama_set_state_data(ctx_tgt, run.state);
-//            drafts = run.drafts;
             struct ggml_cgraph * cgraph = run.cgraph;
-//            batch_tgt = run.batch;
-//            n_past_tgt = run.n_past_tgt;
-            n_past_dft = run.n_past_dft;
-//            s_keep = run.s_keep;
             llama_finish_async_decode(*ctx_tgt, batch_tgt, cgraph);
             tgt_cgraphs.pop_back();
         }
@@ -274,9 +261,6 @@ int main(int argc, char ** argv) {
             llama_swap_comm(ctx_tgt);
             LOG("Swapped comm to target only, id %d\n", llama_node_id(ctx_tgt));
 
-
-            // We can start the target pipeline now without needing to wait for speculation
-//            tgt_cgraphs.push_front(llama_start_async_decode(*ctx_tgt, batch_tgt));
 
             if (id == llama_token_eos(model_tgt)) {
                 has_eos = true;
@@ -335,25 +319,12 @@ int main(int argc, char ** argv) {
                 llama_batch_add(batch_tgt, id, n_past_tgt, {0}, true);
                 // batch_tgt.n_tokens = 1
 
-//            llama_kv_cache_seq_rm  (ctx_tgt, n_seq_dft+1, -1, -1);
-//            llama_kv_cache_seq_cp  (ctx_tgt, 0, n_seq_dft+1, -1, -1);
-//            llama_kv_cache_seq_keep(ctx_tgt, n_seq_dft+1); // NEEDED for some reason
 
-                n_past_tgt++;
                 struct seq_async_run run;
-                run.s_keep = s_keep;
-                run.drafts = drafts;
                 run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
-//            llama_finish_async_decode(*ctx_tgt, batch_tgt, run.cgraph);
-                run.n_past_tgt = n_past_tgt;
-                run.n_past_dft = n_past_dft;
-                run.batch = batch_tgt;
                 tgt_cgraphs.push_front(run);
-                n_past_tgt--;
                 llama_kv_cache_seq_rm(ctx_tgt, 0, n_past_tgt, n_past_tgt + 1);
 
-//            llama_kv_cache_seq_cp  (ctx_tgt, n_seq_dft+1, 0, -1, -1);
-//            llama_kv_cache_seq_keep(ctx_tgt, 0);
             }
 
             should_run_async = !should_run_async;
@@ -455,16 +426,11 @@ int main(int argc, char ** argv) {
                 }
 
 
-
-
-
-
                 if (cur_p[0].p < p_accept) {
                     LOG("stopping drafting for seq %3d, probability too low: %.3f < %.3f\n", s, cur_p[0].p, p_accept);
                     drafts[s].drafting = false;
                     continue;
                 }
-
 
 
 
@@ -561,35 +527,11 @@ int main(int argc, char ** argv) {
 
             // LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
             struct seq_async_run run;
-            run.state = (uint8_t *)malloc(llama_get_state_size(ctx_tgt));
-            llama_copy_state_data(ctx_tgt, run.state);
-            run.s_keep = s_keep;
-            run.drafts = drafts;
             run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
-            run.n_past_tgt = n_past_tgt;
-            run.n_past_dft = n_past_dft;
-            run.batch = batch_tgt;
             tgt_cgraphs.push_front(run);
 
         }
-
-//        llama_kv_cache_seq_keep(ctx_tgt, 0);
-//        for (int s = 1; s < n_seq_dft; ++s) {
-//            llama_kv_cache_seq_cp(ctx_tgt, 0, s, -1, -1);
-//        }
-
-        // We can start the target pipeline now without needing to wait for speculation
-//        struct seq_async_run run;
-//        run.state = (uint8_t *)malloc(llama_get_state_size(ctx_tgt));
-//        llama_copy_state_data(ctx_tgt, run.state);
-//        run.s_keep = s_keep;
-//        run.drafts = drafts;
-//        run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
-//        run.n_past_tgt = n_past_tgt;
-//        run.n_past_dft = n_past_dft;
-//        run.batch = batch_tgt;
-//
-//        tgt_cgraphs.push_front(run);
+        
 
         for (int s = 0; s < n_seq_dft; ++s) {
             if (!drafts[s].active) {

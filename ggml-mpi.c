@@ -139,10 +139,10 @@ void ggml_mpi_sync_pipelined(
         MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
     }
     if(ctx_mpi->rank < ctx_mpi->size - 1) {
-        MPI_Request req;
-        MPI_Isend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm, &(req));
-        MPI_Request_free(&req);
-//        MPI_Send(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
+//        MPI_Request req;
+//        MPI_Isend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm, &(req));
+//        MPI_Request_free(&req);
+        MPI_Send(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
     }
 }
 

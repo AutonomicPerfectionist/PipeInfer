@@ -341,7 +341,7 @@ static void ggml_mpi_async_tensor_recv(struct ggml_mpi_context * ctx_mpi, struct
         default: GGML_ASSERT(false && "not implemented");
     }
 
-//    ggml_mpi_wait_recv(ctx_mpi);
+    ggml_mpi_wait_recv(ctx_mpi);
 //    ctx_mpi->duped_recv_tensor = t;
     ctx_mpi->asyncRecvWaiting = true;
     const int retval = MPI_Irecv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 0, ctx_mpi->comm, &(ctx_mpi->asyncRecvRequest));

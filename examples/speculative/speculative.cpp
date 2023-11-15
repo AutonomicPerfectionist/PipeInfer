@@ -151,9 +151,13 @@ int main(int argc, char ** argv) {
 
     fprintf(stderr, "\n\n");
 
-    for (auto id : inp) {
-        fprintf(stderr, "%s", llama_token_to_piece(ctx_tgt, id).c_str());
+    if (llama_node_id(ctx_tgt) == 0) {
+        for (auto id : inp) {
+            fprintf(stderr, "%s", llama_token_to_piece(ctx_tgt, id).c_str());
+        }
     }
+
+
 
     fflush(stderr);
 
@@ -250,9 +254,10 @@ int main(int argc, char ** argv) {
 
             //LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, ctx_sampling->prev).c_str());
 
-            const std::string token_str = llama_token_to_piece(ctx_tgt, id);
             // Root of WORLD
+            std::string token_str;
             if (llama_node_id(ctx_tgt) == 0) {
+                std::string token_str = llama_token_to_piece(ctx_tgt, id);
                 printf("%s", token_str.c_str());
                 fflush(stdout);
             }
@@ -297,7 +302,12 @@ int main(int argc, char ** argv) {
                 }
             }
 
-            LOG("the sampled target token (%d, '%s') did not match, or we ran out of drafted tokens\n", id, token_str.c_str());
+
+            if (llama_node_id(ctx_tgt) < 0) {
+                LOG("the sampled target token (%d, '%s') did not match, or we ran out of drafted tokens\n", id, token_str.c_str());
+
+            }
+
 
             // TODO: simplify
             {
@@ -420,10 +430,15 @@ int main(int argc, char ** argv) {
                 llama_swap_comm(ctx_dft);
                 LOG("Swapped comm to draft only, id %d\n", llama_node_id(ctx_dft));
 
-                for (int k = 0; k < std::min(n_seq_dft + 3, (int) cur_p.size()); ++k) {
-                    LOG(" - draft candidate %3d for seq %3d, pos %3d: %6d (%8.3f) '%s'\n",
+
+                if (llama_node_id(ctx_dft) >= 0) {
+                    for (int k = 0; k < std::min(n_seq_dft + 3, (int) cur_p.size()); ++k) {
+                        LOG(" - draft candidate %3d for seq %3d, pos %3d: %6d (%8.3f) '%s'\n",
                             k, s, i, cur_p[k].id, cur_p[k].p, llama_token_to_piece(ctx_dft, cur_p[k].id).c_str());
+                    }
                 }
+
+
 
 
                 if (cur_p[0].p < p_accept) {
@@ -531,7 +546,7 @@ int main(int argc, char ** argv) {
             tgt_cgraphs.push_front(run);
 
         }
-        
+
 
         for (int s = 0; s < n_seq_dft; ++s) {
             if (!drafts[s].active) {

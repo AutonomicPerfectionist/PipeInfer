@@ -139,10 +139,10 @@ void ggml_mpi_sync_pipelined(
         MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
     }
     if(ctx_mpi->rank < ctx_mpi->size - 1) {
-//        MPI_Request req;
-//        MPI_Isend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm, &(req));
-//        MPI_Request_free(&req);
-        MPI_Send(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
+        MPI_Request req;
+        MPI_Isend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm, &(req));
+        MPI_Request_free(&req);
+//        MPI_Send(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
     }
 }
 
@@ -298,7 +298,7 @@ static void ggml_mpi_tensor_send(struct ggml_mpi_context * ctx_mpi, struct ggml_
     ctx_mpi->asyncSendWaiting = true;
 
     MPI_Request req;
-    const int retval = MPI_Isend(ctx_mpi->duped_send_tensor->data, ggml_nelements(ctx_mpi->duped_send_tensor), mpi_type, mpi_rank_dst, 0, ctx_mpi->comm, &req);
+    const int retval = MPI_Isend(ctx_mpi->duped_send_tensor->data, ggml_nelements(ctx_mpi->duped_send_tensor), mpi_type, mpi_rank_dst, 7, ctx_mpi->comm, &req);
     MPI_Request_free(&req);
     GGML_ASSERT(retval == MPI_SUCCESS);
 }
@@ -314,7 +314,7 @@ static void ggml_mpi_tensor_recv(struct ggml_mpi_context * ctx_mpi, struct ggml_
         case GGML_TYPE_F32: mpi_type = MPI_FLOAT;   break;
         default: GGML_ASSERT(false && "not implemented");
     }
-    const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 0, ctx_mpi->comm, MPI_STATUS_IGNORE);
+    const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 7, ctx_mpi->comm, MPI_STATUS_IGNORE);
     GGML_ASSERT(retval == MPI_SUCCESS);
 }
 
@@ -348,7 +348,7 @@ static void ggml_mpi_async_tensor_recv(struct ggml_mpi_context * ctx_mpi, struct
     ggml_mpi_wait_recv(ctx_mpi);
 //    ctx_mpi->duped_recv_tensor = t;
     ctx_mpi->asyncRecvWaiting = true;
-    const int retval = MPI_Irecv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 0, ctx_mpi->comm, &(ctx_mpi->asyncRecvRequest));
+    const int retval = MPI_Irecv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, 7, ctx_mpi->comm, &(ctx_mpi->asyncRecvRequest));
 
     GGML_ASSERT(retval == MPI_SUCCESS);
 }

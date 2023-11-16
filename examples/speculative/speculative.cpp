@@ -229,6 +229,7 @@ int main(int argc, char ** argv) {
         int s_keep = 0;
 
         if (!tgt_cgraphs.empty()) {
+            LOG("Finishing async decode\n");
             struct seq_async_run run = tgt_cgraphs.back();
             struct ggml_cgraph * cgraph = run.cgraph;
             llama_finish_async_decode(*ctx_tgt, batch_tgt, cgraph);
@@ -325,6 +326,7 @@ int main(int argc, char ** argv) {
             }
 
             if (should_run_async) {
+                LOG("Beginning async decode\n");
                 llama_batch_clear(batch_tgt);
                 llama_batch_add(batch_tgt, id, n_past_tgt, {0}, true);
                 // batch_tgt.n_tokens = 1
@@ -361,6 +363,7 @@ int main(int argc, char ** argv) {
             llama_kv_cache_seq_rm(ctx_dft, -1, n_past_dft, -1);
 
             // Kick off drafting pipeline but don't need it just yet
+            LOG("Beginning async draft\n");
             dft_cgraphs.push_front(llama_start_async_decode(*ctx_dft, batch_dft));
             //llama_decode(ctx_dft, batch_dft);
             // DON'T FORGET THE MATCHING DECODE WHEN NEEDED
@@ -391,6 +394,7 @@ int main(int argc, char ** argv) {
 
         // We need the draft now, so wait for it
         if (!dft_cgraphs.empty()) {
+            LOG("Finishing async decode of draft\n");
             llama_finish_async_decode(*ctx_dft, batch_dft, dft_cgraphs.back());
             dft_cgraphs.pop_back();
         }
@@ -521,6 +525,7 @@ int main(int argc, char ** argv) {
             }
 
             // evaluate the drafted tokens on the draft model
+            LOG("Running synchronous draft decode\n");
             llama_decode(ctx_dft, batch_dft);
             ++n_past_cur;
             ++n_drafted;
@@ -540,7 +545,7 @@ int main(int argc, char ** argv) {
             ++n_past_tgt;
 
 
-            // LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
+            LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
             struct seq_async_run run;
             run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
             tgt_cgraphs.push_front(run);

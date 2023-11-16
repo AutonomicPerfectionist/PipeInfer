@@ -27,6 +27,7 @@ struct seq_draft {
 
 struct seq_async_run {
     struct ggml_cgraph * cgraph;
+    llama_batch batch;
 };
 
 int main(int argc, char ** argv) {
@@ -229,10 +230,10 @@ int main(int argc, char ** argv) {
         int s_keep = 0;
 
         if (!tgt_cgraphs.empty()) {
-            LOG("Finishing async decode\n");
+            LOG("Finishing async decode, should_run_async = %d\n", should_run_async);
             struct seq_async_run run = tgt_cgraphs.back();
             struct ggml_cgraph * cgraph = run.cgraph;
-            llama_finish_async_decode(*ctx_tgt, batch_tgt, cgraph);
+            llama_finish_async_decode(*ctx_tgt, run.batch, cgraph);
             tgt_cgraphs.pop_back();
         }
 
@@ -334,6 +335,7 @@ int main(int argc, char ** argv) {
 
                 struct seq_async_run run;
                 run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
+                run.batch = batch_tgt;
                 tgt_cgraphs.push_front(run);
                 llama_kv_cache_seq_rm(ctx_tgt, 0, n_past_tgt, n_past_tgt + 1);
 
@@ -547,6 +549,7 @@ int main(int argc, char ** argv) {
 
             LOG("target batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_tgt, batch_tgt).c_str());
             struct seq_async_run run;
+            run.batch = batch_tgt;
             run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
             tgt_cgraphs.push_front(run);
 

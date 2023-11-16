@@ -30,6 +30,7 @@ struct ggml_mpi_context {
     bool running_decode;
     bool res;
     bool embed;
+    void* send_buffer;
 };
 
 void ggml_mpi_sync_pipelined(
@@ -59,6 +60,8 @@ struct ggml_mpi_context * ggml_mpi_init(void) {
     ctx->asyncRecvWaiting = false;
     ctx->running_decode = false;
     ctx->async = false;
+    ctx->send_buffer = calloc(1, 4096*1024); // 4MB buffer
+    MPI_Buffer_attach(ctx->send_buffer, 4096*1024);
 //    ctx->status = *MPI_STATUS_IGNORE;
 
     return ctx;
@@ -139,9 +142,9 @@ void ggml_mpi_sync_pipelined(
         MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
     }
     if(ctx_mpi->rank < ctx_mpi->size - 1) {
-        MPI_Request req;
-        MPI_Isend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm, &(req));
-        MPI_Request_free(&req);
+//        MPI_Request req;
+        MPI_Bsend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
+//        MPI_Request_free(&req);
 //        MPI_Send(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
     }
 }
@@ -297,9 +300,9 @@ static void ggml_mpi_tensor_send(struct ggml_mpi_context * ctx_mpi, struct ggml_
     ctx_mpi->duped_send_tensor = ggml_mpi_dup_tensor(t);
     ctx_mpi->asyncSendWaiting = true;
 
-    MPI_Request req;
-    const int retval = MPI_Isend(ctx_mpi->duped_send_tensor->data, ggml_nelements(ctx_mpi->duped_send_tensor), mpi_type, mpi_rank_dst, 7, ctx_mpi->comm, &req);
-    MPI_Request_free(&req);
+//    MPI_Request req;
+    const int retval = MPI_Bsend(ctx_mpi->duped_send_tensor->data, ggml_nelements(ctx_mpi->duped_send_tensor), mpi_type, mpi_rank_dst, 7, ctx_mpi->comm);
+//    MPI_Request_free(&req);
     GGML_ASSERT(retval == MPI_SUCCESS);
 }
 

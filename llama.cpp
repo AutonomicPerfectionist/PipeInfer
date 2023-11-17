@@ -1655,13 +1655,13 @@ static void llama_kv_cache_seq_rm(
     if (p1 < 0) p1 = std::numeric_limits<llama_pos>::max();
 
     for (uint32_t i = 0; i < cache.size; ++i) {
-        if (cache.cells[i].pos >= p0 && cache.cells[i].pos < p1) {
+        if ((cache.cells[i].pos >= p0 || cache.cells[i].pos < 0) && cache.cells[i].pos < p1) {
             if (seq_id < 0) {
                 cache.cells[i].seq_id.clear();
             } else if (cache.cells[i].has_seq_id(seq_id)) {
                 cache.cells[i].seq_id.erase(seq_id);
             } else {
-                continue;
+//                continue;
             }
             if (cache.cells[i].seq_id.empty()) {
                 // keep count of the number of used cells
@@ -5497,7 +5497,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 
 #ifdef GGML_USE_MPI
         // TODO: needs fix after #3228
-        if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits))) {
+        if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits), false)) {
             return nullptr;
         }
         n_tokens = batch.n_tokens;
@@ -5562,6 +5562,11 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
 
 #ifdef GGML_USE_MPI
+        if (ggml_mpi_rank(lctx.ctx_mpi) == 0 && ggml_mpi_size(lctx.ctx_mpi) > 1) {
+            if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits), true)) {
+                return nullptr;
+            }
+        }
         if (!ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf)) {
             return nullptr;
         }
@@ -9636,7 +9641,7 @@ int llama_process_mpi_worker(
             llama_kv_cache_clear(ctx);
             break;
         case 2:
-            llama_kv_cache_seq_rm(ctx, 0, 0, 0);
+            llama_kv_cache_seq_rm(ctx, 1, -1, -1);
             break;
         case 3:
             llama_kv_cache_seq_cp(ctx, 0, 0, 0, 0);

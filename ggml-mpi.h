@@ -140,10 +140,12 @@ size_t ggml_mpi_size(struct ggml_mpi_context * ctx);
 bool ggml_mpi_eval_init(
         struct ggml_mpi_context *   ctx_mpi,
                 int32_t         *   n_tokens,
+                int32_t         **  tokens,
                 int32_t         **  pos,
                 int32_t         **  n_seq_ids,
                 int32_t         *** seq_id,
-                int8_t          **  logits);
+                int8_t          **  logits,
+                bool                receive_only);
 
 void ggml_mpi_synch_int(
         struct ggml_mpi_context     * ctx_mpi,

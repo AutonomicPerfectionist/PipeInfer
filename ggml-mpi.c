@@ -128,6 +128,21 @@ int ggml_mpi_next_node(struct ggml_mpi_context * ctx_mpi) {
     return (ctx_mpi->rank + 1) % ctx_mpi->size;
 }
 
+void ggml_mpi_sync_pipelined_recv(
+        struct ggml_mpi_context *   ctx_mpi,
+        void * val,
+        int count,
+        MPI_Datatype datatype,
+        int tag
+) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+    MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
+
+}
+
+
 void ggml_mpi_sync_pipelined(
         struct ggml_mpi_context *   ctx_mpi,
         void * val,
@@ -141,7 +156,7 @@ void ggml_mpi_sync_pipelined(
     if (ctx_mpi->rank != 0) {
         MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
     }
-    if(ctx_mpi->rank < ctx_mpi->size - 1) {
+    if(ctx_mpi->rank < ctx_mpi->size) {
         const int retval = MPI_Bsend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
         GGML_ASSERT(retval == MPI_SUCCESS);
 
@@ -151,16 +166,23 @@ void ggml_mpi_sync_pipelined(
 bool ggml_mpi_eval_init(
         struct ggml_mpi_context *   ctx_mpi,
                 int32_t         *   n_tokens,
+                int32_t         **  tokens,
                 int32_t         **  pos,
                 int32_t         **  n_seq_ids,
                 int32_t         *** seq_id,
-                int8_t          **  logits) {
+                int8_t          **  logits,
+                bool                receive_only) {
     if(ctx_mpi->comm == MPI_COMM_NULL) {
         return false;
     }
     int32_t old_n_tokens = *n_tokens;
 
-    ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, 0);
+    if (receive_only) {
+        ggml_mpi_sync_pipelined_recv(ctx_mpi, n_tokens, 1, MPI_INT, 0);
+
+    } else {
+        ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, 0);
+    }
 
     // If what was passed in differs from what was broadcast,
     // we can't guarantee the allocated sizes are correct
@@ -169,14 +191,22 @@ bool ggml_mpi_eval_init(
     if (old_n_tokens != *n_tokens) {
         *pos = realloc(*pos, *n_tokens * sizeof(int32_t));
         *n_seq_ids = realloc(*n_seq_ids, *n_tokens * sizeof(int32_t ));
-        *logits = realloc(*logits, *n_tokens * sizeof(int32_t));
+        *tokens = realloc(*tokens, *n_tokens * sizeof(int32_t ));
+    }
+
+    if (receive_only) {
+        ggml_mpi_sync_pipelined_recv(ctx_mpi, *tokens, *n_tokens, MPI_INT32_T, 0);
+
+    } else {
+        ggml_mpi_sync_pipelined(ctx_mpi, *tokens, *n_tokens, MPI_INT32_T, 0);
     }
 
 
-
-//    MPI_Bcast(&total_n_seq_ids,     1, MPI_INT32_T, 0, ctx_mpi->comm);
-    ggml_mpi_sync_pipelined(ctx_mpi, *n_seq_ids,   *n_tokens, MPI_INT32_T, 0);
-
+    if (receive_only) {
+        ggml_mpi_sync_pipelined_recv(ctx_mpi, *n_seq_ids, *n_tokens, MPI_INT32_T, 0);
+    } else {
+        ggml_mpi_sync_pipelined(ctx_mpi, *n_seq_ids, *n_tokens, MPI_INT32_T, 0);
+    }
     // We need to know the total number of sequence
     // ids, so we count them all up
     int32_t total_n_seq_ids = 0;
@@ -201,9 +231,13 @@ bool ggml_mpi_eval_init(
     }
 
 
-    ggml_mpi_sync_pipelined(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, 0);
-    ggml_mpi_sync_pipelined(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, 0);
-    //MPI_Bcast(*logits,               *n_tokens,        MPI_INT8_T, 0, ctx_mpi->comm);
+    if (receive_only) {
+        ggml_mpi_sync_pipelined_recv(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, 0);
+        ggml_mpi_sync_pipelined_recv(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, 0);
+    } else {
+        ggml_mpi_sync_pipelined(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, 0);
+        ggml_mpi_sync_pipelined(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, 0);
+    }
     int32_t ** new_seq_id = calloc(*n_tokens, sizeof(int32_t*));
     current_index = 0;
     for (int32_t i = 0; i < *n_tokens; i++) {

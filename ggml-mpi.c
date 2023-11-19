@@ -156,7 +156,7 @@ void ggml_mpi_sync_pipelined(
     if (ctx_mpi->rank != 0) {
         MPI_Recv(val, count, datatype, ctx_mpi->rank - 1, tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
     }
-    if(ctx_mpi->rank < ctx_mpi->size) {
+    if(ctx_mpi->rank < ctx_mpi->size - 1) {
         const int retval = MPI_Bsend(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm);
         GGML_ASSERT(retval == MPI_SUCCESS);
 

@@ -5562,11 +5562,11 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
 
 #ifdef GGML_USE_MPI
-        if (ggml_mpi_rank(lctx.ctx_mpi) == 0 && ggml_mpi_size(lctx.ctx_mpi) > 1) {
-            if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits), true)) {
-                return nullptr;
-            }
-        }
+//        if (ggml_mpi_rank(lctx.ctx_mpi) == 0 && ggml_mpi_size(lctx.ctx_mpi) > 1) {
+//            if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits), true)) {
+//                return nullptr;
+//            }
+//        }
         if (!ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf)) {
             return nullptr;
         }

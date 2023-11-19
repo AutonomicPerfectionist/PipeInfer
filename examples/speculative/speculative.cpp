@@ -243,10 +243,10 @@ int main(int argc, char ** argv) {
             tgt_cgraphs.pop_back();
             run_id = run.run_id;
             if (run_id == ASYNC_RUN_ID) {
-                llama_kv_cache_seq_cp  (ctx_tgt, run_id, 0, -1, n_past_tgt);
+//                llama_kv_cache_seq_cp  (ctx_tgt, run_id, 0, -1, n_past_tgt);
 
             } else {
-                llama_kv_cache_seq_cp  (ctx_tgt, run_id, ASYNC_RUN_ID, -1, n_past_tgt);
+//                llama_kv_cache_seq_cp  (ctx_tgt, run_id, ASYNC_RUN_ID, -1, n_past_tgt);
 
             }
         }
@@ -301,7 +301,7 @@ int main(int argc, char ** argv) {
             ++n_predict;
 
             // check if the target token matches any of the drafts
-            if(should_run_async){ // Only running this when should_run_async starts out okay but still goes off the rails eventually
+            { // Only running this when should_run_async starts out okay but still goes off the rails eventually
                 bool matches = false;
 
                 for (int s = 0; s < n_seq_dft; ++s) {
@@ -324,8 +324,9 @@ int main(int argc, char ** argv) {
                     ++n_past_tgt;
                     ++n_past_dft;
                     ++i_dft;
-
-                    continue;
+                    if (should_run_async) {
+                        continue;
+                    }
                 }
             }
 
@@ -342,7 +343,7 @@ int main(int argc, char ** argv) {
 
 
         // TODO: simplify
-        {
+        if (should_run_async) {
             LOG("keeping sequence %d, n_past_tgt = %d, n_past_dft = %d\n", s_keep, n_past_tgt, n_past_dft);
 
             // Pipeline syncing cache ops
@@ -362,16 +363,16 @@ int main(int argc, char ** argv) {
 //
 //                }
                 if (i != s_keep) {
-//                    llama_kv_cache_seq_rm(ctx_tgt, i + 0, -1, n_past_tgt);
+                    llama_kv_cache_seq_rm(ctx_tgt, i + 0, -1, -1);
                 }
 
             }
 //            llama_kv_cache_seq_keep(ctx_tgt, s_keep);
-//            llama_kv_cache_seq_cp  (ctx_tgt, s_keep+run_id, run_id, -1, n_past_tgt);
+            llama_kv_cache_seq_cp  (ctx_tgt, s_keep+run_id, run_id, -1, n_past_tgt);
 //            llama_kv_cache_seq_keep(ctx_tgt, 0);
             for (int i = 1; i < n_seq_dft; i++) {
 //                llama_kv_cache_seq_rm  (ctx_tgt, i+ASYNC_RUN_ID, -1, n_past_tgt);
-//                llama_kv_cache_seq_rm  (ctx_tgt, i+run_id, -1, n_past_tgt);
+                llama_kv_cache_seq_rm  (ctx_tgt, i+run_id, -1, n_past_tgt);
 
             }
 //            llama_kv_cache_seq_rm  (ctx_tgt, run_id, n_past_tgt, n_past_tgt+2);
@@ -382,40 +383,40 @@ int main(int argc, char ** argv) {
 
         }
 
-        if (should_run_async) {
-//                LOG("Beginning async decode\n");
-            llama_batch_clear(batch_tgt);
-            llama_batch_add(batch_tgt, id, n_past_tgt, {ASYNC_RUN_ID}, true);
-            // batch_tgt.n_tokens = 1
-
-
-            for (int i = 0; i < n_seq_dft; i++) {
-//                llama_kv_cache_seq_rm  (ctx_tgt, i+ASYNC_RUN_ID, n_past_tgt, -1);
-            }
-
-//            llama_kv_cache_seq_cp  (ctx_tgt, run_id, ASYNC_RUN_ID, -1, n_past_tgt);
-
-//            llama_kv_cache_seq_keep(ctx_tgt, s_keep);
-//            llama_kv_cache_seq_cp  (ctx_tgt, s_keep+run_id, ASYNC_RUN_ID, -1, n_past_tgt);
-//            llama_kv_cache_seq_keep(ctx_tgt, 0);
-            for (int i = 1; i < n_seq_dft; i++) {
-//                llama_kv_cache_seq_rm  (ctx_tgt, i+ASYNC_RUN_ID, -1, n_past_tgt);
-            }
-//            llama_kv_cache_seq_rm  (ctx_tgt, ASYNC_RUN_ID, n_past_tgt, n_past_tgt+2);
-
-
-
-            struct seq_async_run run;
-            run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
-            run.batch = batch_tgt;
-            run.run_id = ASYNC_RUN_ID;
-            run.n_past_tgt = n_past_tgt;
-            tgt_cgraphs.push_front(run);
-//            llama_kv_cache_seq_rm(ctx_tgt, ASYNC_RUN_ID, n_past_tgt, n_past_tgt + 2);
-
-        }
-
-        should_run_async = !should_run_async;
+//        if (should_run_async) {
+////                LOG("Beginning async decode\n");
+//            llama_batch_clear(batch_tgt);
+//            llama_batch_add(batch_tgt, id, n_past_tgt, {ASYNC_RUN_ID}, true);
+//            // batch_tgt.n_tokens = 1
+//
+//
+//            for (int i = 0; i < n_seq_dft; i++) {
+////                llama_kv_cache_seq_rm  (ctx_tgt, i+ASYNC_RUN_ID, n_past_tgt, -1);
+//            }
+//
+////            llama_kv_cache_seq_cp  (ctx_tgt, run_id, ASYNC_RUN_ID, -1, n_past_tgt);
+//
+////            llama_kv_cache_seq_keep(ctx_tgt, s_keep);
+////            llama_kv_cache_seq_cp  (ctx_tgt, s_keep+run_id, ASYNC_RUN_ID, -1, n_past_tgt);
+////            llama_kv_cache_seq_keep(ctx_tgt, 0);
+//            for (int i = 1; i < n_seq_dft; i++) {
+////                llama_kv_cache_seq_rm  (ctx_tgt, i+ASYNC_RUN_ID, -1, n_past_tgt);
+//            }
+////            llama_kv_cache_seq_rm  (ctx_tgt, ASYNC_RUN_ID, n_past_tgt, n_past_tgt+2);
+//
+//
+//
+//            struct seq_async_run run;
+//            run.cgraph = llama_start_async_decode(*ctx_tgt, batch_tgt);
+//            run.batch = batch_tgt;
+//            run.run_id = 0;
+//            run.n_past_tgt = n_past_tgt;
+//            tgt_cgraphs.push_front(run);
+////            llama_kv_cache_seq_rm(ctx_tgt, ASYNC_RUN_ID, n_past_tgt, n_past_tgt + 2);
+//
+//        }
+//
+//        should_run_async = !should_run_async;
 
         llama_batch_clear(batch_tgt);
         llama_batch_add  (batch_tgt, id, n_past_tgt, { 0 }, true);

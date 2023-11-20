@@ -11,6 +11,24 @@ struct ggml_cgraph;
 extern "C" {
 #endif
 
+#define GGML_MPI_DECODE 0
+
+#define GGML_MPI_KV_CLEAR 1
+
+#define GGML_MPI_KV_SEQ_RM 2
+
+#define GGML_MPI_KV_SEQ_CP 3
+
+#define GGML_MPI_KV_SEQ_KEEP 4
+
+#define GGML_MPI_KV_SEQ_SHIFT 5
+
+#define GGML_MPI_SHUTDOWN 6
+
+#define GGML_MPI_TRANSFER_TENSORS 7
+
+#define GGML_MPI_SYNC_LOGITS 8
+
 /**
  * The context used for MPI operations,
  * a program may make use of more than one
@@ -86,6 +104,8 @@ void ggml_mpi_barrier(struct ggml_mpi_context * ctx);
 
 int ggml_mpi_next_node(struct ggml_mpi_context * ctx_mpi);
 
+int ggml_mpi_prev_node(struct ggml_mpi_context * ctx_mpi);
+
 void ggml_mpi_sync_ints_pipelined(
         struct ggml_mpi_context * ctx_mpi,
         int32_t * vals,
@@ -157,6 +177,22 @@ void ggml_mpi_synch_float(
         struct ggml_mpi_context     * ctx_mpi,
         float * val,
         int root
+);
+
+void ggml_mpi_recv_float_array(
+        struct ggml_mpi_context     * ctx_mpi,
+        float * val,
+        int arr_size,
+        int src,
+        int tag
+);
+
+void ggml_mpi_send_float_array_async(
+        struct ggml_mpi_context     * ctx_mpi,
+        float * val,
+        int arr_size,
+        int dest,
+        int tag
 );
 
 /**

@@ -5424,7 +5424,7 @@ static struct ggml_cgraph * llama_build_graph(
 
 static struct ggml_cgraph * llama_decode_internal_phased(
             llama_context & lctx,
-            llama_batch   batch,
+            llama_batch  & batch,
             uint8_t phase,
             ggml_cgraph * cgraph) {
     uint32_t n_tokens = batch.n_tokens;
@@ -5497,7 +5497,8 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 
 #ifdef GGML_USE_MPI
         // TODO: needs fix after #3228
-        if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits), false)) {
+        if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id),
+                                &(batch.seq_id), &(batch.logits), false)) {
             return nullptr;
         }
         n_tokens = batch.n_tokens;
@@ -5553,20 +5554,8 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         }
         res->backend = GGML_BACKEND_CPU;
 #endif
-        return gf;
-    } else if (phase == 1) {
-
-
-        ggml_cgraph * gf = cgraph;
-        struct ggml_tensor *res = gf->nodes[gf->n_nodes - 1];
-        struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
 
 #ifdef GGML_USE_MPI
-//        if (ggml_mpi_rank(lctx.ctx_mpi) == 0 && ggml_mpi_size(lctx.ctx_mpi) > 1) {
-//            if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id), &(batch.seq_id), &(batch.logits), true)) {
-//                return nullptr;
-//            }
-//        }
         if (!ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf)) {
             return nullptr;
         }
@@ -5636,6 +5625,37 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         ggml_graph_print(gf);
 #endif
 
+        return gf;
+
+    } else if (phase == 1) {
+        ggml_cgraph * gf = cgraph;
+        struct ggml_tensor *res = gf->nodes[gf->n_nodes - 1];
+        struct ggml_tensor *embeddings = gf->nodes[gf->n_nodes - 2];
+
+        // Resize logits
+        auto & logits_out = lctx.logits;
+        {
+
+
+            if (batch.logits || lctx.logits_all) {
+                logits_out.resize(n_vocab * n_tokens);
+            } else {
+                logits_out.resize(n_vocab);
+            }
+        }
+
+#ifdef GGML_USE_MPI
+        if (ggml_mpi_size(lctx.ctx_mpi) > 1 && ggml_mpi_rank(lctx.ctx_mpi) == 0) {
+            ggml_mpi_recv_float_array(lctx.ctx_mpi, logits_out.data(), n_vocab * n_tokens, ggml_mpi_size(lctx.ctx_mpi) - 1, GGML_MPI_SYNC_LOGITS);
+        }
+
+        if (ggml_mpi_rank(lctx.ctx_mpi) == ggml_mpi_size(lctx.ctx_mpi) - 1) {
+
+#endif
+
+        auto * net_output = (float *) ggml_get_data(res);
+
+
         // plot the computation graph in dot format (for debugging purposes)
         //if (n_past%100 == 0) {
         //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
@@ -5645,22 +5665,17 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         // TODO: do not compute and extract logits if only embeddings are needed
         //       need to update the graphs to skip "result_output"
         {
-            auto & logits_out = lctx.logits;
-
             if (batch.logits) {
-                logits_out.resize(n_vocab * n_tokens);
                 for (uint32_t i = 0; i < n_tokens; i++) {
                     if (batch.logits[i] == 0) {
                         continue;
                     }
-                    memcpy(logits_out.data() + (n_vocab*i), (float *) ggml_get_data(res) + (n_vocab*i), sizeof(float)*n_vocab);
+                    memcpy(logits_out.data() + (n_vocab*i),  net_output + (n_vocab*i), sizeof(float)*n_vocab);
                 }
             } else if (lctx.logits_all) {
-                logits_out.resize(n_vocab * n_tokens);
-                memcpy(logits_out.data(), (float *) ggml_get_data(res), sizeof(float)*n_vocab*n_tokens);
+                memcpy(logits_out.data(), net_output, sizeof(float)*n_vocab*n_tokens);
             } else {
-                logits_out.resize(n_vocab);
-                memcpy(logits_out.data(), (float *) ggml_get_data(res) + (n_vocab*(n_tokens - 1)), sizeof(float)*n_vocab);
+                memcpy(logits_out.data(), net_output + (n_vocab*(n_tokens - 1)), sizeof(float)*n_vocab);
             }
         }
 
@@ -5671,6 +5686,13 @@ static struct ggml_cgraph * llama_decode_internal_phased(
             embedding_out.resize(n_embd);
             memcpy(embedding_out.data(), (float *) ggml_get_data(embeddings) + (n_embd*(n_tokens - 1)), sizeof(float)*n_embd);
         }
+
+#ifdef GGML_USE_MPI
+        }
+        if (ggml_mpi_size(lctx.ctx_mpi) > 1 && ggml_mpi_rank(lctx.ctx_mpi) == ggml_mpi_size(lctx.ctx_mpi) - 1) {
+            ggml_mpi_send_float_array_async(lctx.ctx_mpi, logits_out.data(), n_vocab * n_tokens, 0, GGML_MPI_SYNC_LOGITS);
+        }
+#endif
 
         // measure the performance only for the single-token evals
         if (n_tokens == 1) {
@@ -5688,7 +5710,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
             lctx.t_load_us = ggml_time_us() - lctx.t_start_us;
             lctx.has_evaluated_once = true;
         }
-            return gf;
+        return cgraph;
 
     }
     return nullptr;
@@ -5710,21 +5732,21 @@ static int llama_decode_internal(
     if (gf != nullptr) {
         return llama_decode_internal_phased(lctx, batch, 1, gf) != nullptr;
     } else {
-        printf("Graph is null\n");
-        return -1;
+//        printf("Graph is null\n");
+//        return -1;
     }
 }
 
 struct ggml_cgraph * llama_start_async_decode(
         llama_context & lctx,
-        llama_batch   batch) {
+        llama_batch  & batch) {
     return llama_decode_internal_phased(lctx, batch, 0, nullptr);
 
 }
 
 int llama_finish_async_decode(
         struct llama_context & lctx,
-        struct llama_batch   batch,
+        struct llama_batch &  batch,
         struct ggml_cgraph * cgraph) {
 
     int ret;
@@ -9634,25 +9656,25 @@ int llama_process_mpi_worker(
     ggml_mpi_probe(ctx->ctx_mpi, -1, -1);
     int tag = ggml_mpi_status_tag(ctx->ctx_mpi);
     switch (tag) {
-        case 0:
+        case GGML_MPI_DECODE:
             return llama_decode_internal(*ctx, batch);
             break;
-        case 1:
+        case GGML_MPI_KV_CLEAR:
             llama_kv_cache_clear(ctx);
             break;
-        case 2:
+        case GGML_MPI_KV_SEQ_RM:
             llama_kv_cache_seq_rm(ctx, 1, -1, -1);
             break;
-        case 3:
+        case GGML_MPI_KV_SEQ_CP:
             llama_kv_cache_seq_cp(ctx, 0, 0, 0, 0);
             break;
-        case 4:
+        case GGML_MPI_KV_SEQ_KEEP:
             llama_kv_cache_seq_keep(ctx, 0);
             break;
-        case 5:
+        case GGML_MPI_KV_SEQ_SHIFT:
             llama_kv_cache_seq_shift(ctx, 0, 0, 0, 0);
             break;
-        case 6:
+        case GGML_MPI_SHUTDOWN:
             llama_free(ctx);
             llama_backend_free();
             exit(0);

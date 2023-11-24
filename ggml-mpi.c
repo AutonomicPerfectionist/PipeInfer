@@ -194,11 +194,11 @@ bool ggml_mpi_eval_init(
     // we can't guarantee the allocated sizes are correct
     // TODO check how often this is done and if it's a problem,
     //      try to allocate ahead of time
-    if (old_n_tokens != *n_tokens) {
-        *pos = realloc(*pos, *n_tokens * sizeof(int32_t));
-        *n_seq_ids = realloc(*n_seq_ids, *n_tokens * sizeof(int32_t ));
-        *tokens = realloc(*tokens, *n_tokens * sizeof(int32_t ));
-    }
+//    if (old_n_tokens != *n_tokens) {
+//        *pos = realloc(*pos, *n_tokens * sizeof(int32_t));
+//        *n_seq_ids = realloc(*n_seq_ids, *n_tokens * sizeof(int32_t ));
+//        *tokens = realloc(*tokens, *n_tokens * sizeof(int32_t ));
+//    }
 
     ggml_mpi_sync_pipelined(ctx_mpi, *tokens, *n_tokens, MPI_INT32_T, 0);
 
@@ -233,18 +233,17 @@ bool ggml_mpi_eval_init(
     ggml_mpi_sync_pipelined(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, 0);
     ggml_mpi_sync_pipelined(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, 0);
 
-    int32_t ** new_seq_id = calloc(*n_tokens, sizeof(int32_t*));
     current_index = 0;
     for (int32_t i = 0; i < *n_tokens; i++) {
-        new_seq_id[i] = calloc((*n_seq_ids)[i], sizeof(int32_t));
-        for (int32_t j = 0; j < (*n_seq_ids)[i]; j++) {
-            new_seq_id[i][j] = flattened_seq_ids[current_index];
-            current_index++;
+        if (i < *n_tokens) {
+            for (int32_t j = 0; j < (*n_seq_ids)[i]; j++) {
+                (*seq_id)[i][j] = flattened_seq_ids[current_index];
+                current_index++;
+            }
         }
     }
     free(flattened_seq_ids);
-    //free(*seq_id); // <- something is still holding onto this, need to investigate
-    *seq_id = new_seq_id;
+
     return true;
 }
 

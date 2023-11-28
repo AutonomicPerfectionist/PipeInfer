@@ -60,9 +60,8 @@ struct ggml_mpi_context * ggml_mpi_init(void) {
     ctx->asyncRecvWaiting = false;
     ctx->running_decode = false;
     ctx->async = false;
-    ctx->send_buffer = calloc(1, 4096*1024*32); // 128MB buffer
+    ctx->send_buffer = calloc(1, 128*1024*1024); // 128MB buffer
     MPI_Buffer_attach(ctx->send_buffer, 4096*1024*32);
-//    ctx->status = *MPI_STATUS_IGNORE;
 
     return ctx;
 }
@@ -159,7 +158,7 @@ void ggml_mpi_sync_pipelined(
         return;
     }
 
-//    printf("Rank %d sync pipelined\n", ctx_mpi->rank);
+    //printf("Rank %d sync pipelined\n", ctx_mpi->rank);
 
 
     if (ctx_mpi->rank != 0) {
@@ -190,15 +189,13 @@ bool ggml_mpi_eval_init(
     ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, 0);
 
 
-    // If what was passed in differs from what was broadcast,
-    // we can't guarantee the allocated sizes are correct
-    // TODO check how often this is done and if it's a problem,
-    //      try to allocate ahead of time
-//    if (old_n_tokens != *n_tokens) {
-//        *pos = realloc(*pos, *n_tokens * sizeof(int32_t));
-//        *n_seq_ids = realloc(*n_seq_ids, *n_tokens * sizeof(int32_t ));
-//        *tokens = realloc(*tokens, *n_tokens * sizeof(int32_t ));
-//    }
+    // For now, we assume that the pos, seq_ids, tokens, etc have been
+    // pre-allocated for the largest possible sizes, even on worker nodes.
+    //if (old_n_tokens != *n_tokens) {
+    //    *pos = realloc(*pos, *n_tokens * sizeof(int32_t));
+    //    *n_seq_ids = realloc(*n_seq_ids, *n_tokens * sizeof(int32_t ));
+    //    *tokens = realloc(*tokens, *n_tokens * sizeof(int32_t ));
+    //}
 
     ggml_mpi_sync_pipelined(ctx_mpi, *tokens, *n_tokens, MPI_INT32_T, 0);
 
@@ -235,12 +232,11 @@ bool ggml_mpi_eval_init(
 
     current_index = 0;
     for (int32_t i = 0; i < *n_tokens; i++) {
-        if (i < *n_tokens) {
-            for (int32_t j = 0; j < (*n_seq_ids)[i]; j++) {
-                (*seq_id)[i][j] = flattened_seq_ids[current_index];
-                current_index++;
-            }
+        for (int32_t j = 0; j < (*n_seq_ids)[i]; j++) {
+            (*seq_id)[i][j] = flattened_seq_ids[current_index];
+            current_index++;
         }
+
     }
     free(flattened_seq_ids);
 
@@ -544,7 +540,6 @@ void ggml_mpi_graph_creation_post(
     // TODO: instead of rearranging the nodes, we should be able to execute a subset of the compute graph
     for (int i = 1; i < idx_l1 - idx_l0; i++) {
         gf->nodes[i] = gf->nodes[idx_l0 + i];
-        gf->grads[i] = gf->grads[idx_l0 + i];
     }
 
     // the first node performs the "get_rows" operation, the rest of the nodes get the data from the previous node

@@ -5732,8 +5732,8 @@ static int llama_decode_internal(
     if (gf != nullptr) {
         return llama_decode_internal_phased(lctx, batch, 1, gf) != nullptr;
     } else {
-//        printf("Graph is null\n");
-//        return -1;
+        //printf("Graph is null\n");
+        return -1;
     }
 }
 

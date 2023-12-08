@@ -31,6 +31,7 @@ struct seq_async_run {
     std::vector<seq_draft> drafts;
     int run_id;
     int n_past_tgt;
+    int n_past_dft;
     int i_dft;
     int s_keep;
     int seq_offset;
@@ -245,8 +246,10 @@ int main(int argc, char ** argv) {
     int offset = 1;
     bool has_asynced = false;
     int run_n_past_tgt = n_past_tgt;
+    int run_n_past_dft = n_past_dft;
     int seq_offset = 1;
     struct llama_kv_cache_view kvc_view = llama_kv_cache_view_init(ctx_tgt, 2*n_seq_dft+1);
+    struct llama_kv_cache_view kvc_view_dft = llama_kv_cache_view_init(ctx_dft, 2*n_seq_dft+1);
     std::vector<llama_token> generated = inp;
     bool run_speculative = false;
     while (true) {
@@ -261,18 +264,13 @@ int main(int argc, char ** argv) {
             LOG("Finishing async decode, is async = %d, old seq_offset = %d\n", run.run_id == ASYNC_RUN_ID, seq_offset);
             struct ggml_cgraph * cgraph = run.cgraph;
             llama_finish_async_decode(*ctx_tgt, run.batch, cgraph);
-            llama_swap_comm(ctx_tgt);
-            if (llama_node_id(ctx_tgt) == 0) {
-                llama_kv_cache_view_update(ctx_tgt, &kvc_view);
-                //dump_kv_cache_view_seqs(kvc_view, 20);
-            }
-            llama_swap_comm(ctx_tgt);
             tgt_cgraphs.pop_back();
             run_id = run.run_id;
             drafts = run.drafts;
             run_speculative = run.speculative;
 //            ctx_sampling = run.ctx_sampling;
             run_n_past_tgt = run.n_past_tgt;
+            run_n_past_dft = run.n_past_dft;
             seq_offset = run.seq_offset;
 //            s_keep = run.s_keep;
             if (run_id == ASYNC_RUN_ID) {
@@ -285,7 +283,10 @@ int main(int argc, char ** argv) {
         } else {
 //            run_n_past_tgt = n_past_tgt;
         }
-
+        if (llama_node_id(ctx_tgt) == 0) {
+            llama_kv_cache_view_update(ctx_tgt, &kvc_view);
+            dump_kv_cache_view_seqs(kvc_view, 20);
+        }
         // print current draft sequences
         bool any_active = false;
         for (int s = 0; s < n_seq_dft; ++s) {
@@ -309,8 +310,8 @@ int main(int argc, char ** argv) {
 
         if (run_speculative) {
             LOG("Speculative run, last generated: %d, first draft: %d\n", generated.back(), drafts[s_keep].tokens[0]);
-            if(generated.back() == drafts[s_keep].tokens[0]) {
-                //drafts[s_keep].tokens.erase(drafts[s_keep].tokens.begin());
+            if(generated.back()-(n_past_tgt-run_n_past_tgt) == drafts[s_keep].tokens[0]) {
+                //drafts[0].tokens.erase(drafts[0].tokens.begin());
                 for (int s = 0; s < n_seq_dft; ++s) {
                     if (!drafts[s].active) {
                         continue;
@@ -327,7 +328,7 @@ int main(int argc, char ** argv) {
         std::vector<int> keeps = seq_ids;
         while (!keeps.empty()) {
 
-            LOG("sampling target: s_keep = %3d, i_dft = %3d, i_batch_tgt = %3d, run_n_past_tgt = %3d, n_past_tgt = %3d, seq_offset = %d\n", s_keep, i_dft, drafts[s_keep].i_batch_tgt[i_dft], run_n_past_tgt, n_past_tgt, seq_offset);
+            LOG("sampling target: s_keep = %3d, i_dft = %3d, i_batch_tgt = %3d, run_n_past_tgt = %3d, n_past_tgt = %3d, seq_offset = %d, keeps[0] = %d\n", s_keep, i_dft, drafts[keeps[0]].i_batch_tgt[i_dft], run_n_past_tgt, n_past_tgt, seq_offset, keeps[0]);
 
 
             // sample from the target model
@@ -340,7 +341,7 @@ int main(int argc, char ** argv) {
             llama_sync_token(ctx_tgt, &id, 0);
 
             LOG("Should run async: %d\n", should_run_async);
-            LOG("Sampling index: %d\n", drafts[s_keep].i_batch_tgt[i_dft]);
+            LOG("Sampling index: %d\n", drafts[keeps[0]].i_batch_tgt[i_dft]);
 
 
             LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, ctx_sampling->prev).c_str());
@@ -393,10 +394,9 @@ int main(int argc, char ** argv) {
 
                     if (i_dft < (int) drafts[s].tokens.size() && id == drafts[s].tokens[i_dft]) {
                         LOG("the sampled target token matches the %dth drafted token of sequence %d (%d, '%s') - accepted\n", i_dft, s, id, token_str.c_str());
-
-                        s_keep = s;
                         matches = true;
                         keeps.push_back(s);
+                        s_keep = keeps[0];
                     } else {
                         drafts[s].active = false;
                     }
@@ -415,10 +415,6 @@ int main(int argc, char ** argv) {
                 }
             }
 
-
-
-
-            //break;
         }
 
 
@@ -434,10 +430,10 @@ int main(int argc, char ** argv) {
         }
 
         // Pipeline syncing cache ops
-        llama_kv_cache_seq_keep(ctx_dft, s_keep);
-        llama_kv_cache_seq_cp  (ctx_dft, s_keep, 0, -1, -1);
-        llama_kv_cache_seq_keep(ctx_dft, 0);
-        llama_kv_cache_seq_rm  (ctx_dft, 0, n_past_dft, -1);
+//        llama_kv_cache_seq_keep(ctx_dft, s_keep);
+//        llama_kv_cache_seq_cp  (ctx_dft, s_keep, 0, -1, -1);
+//        llama_kv_cache_seq_keep(ctx_dft, 0);
+//        llama_kv_cache_seq_rm  (ctx_dft, 0, n_past_dft, -1);
 
         // TODO: simplify
         if (run_id != ASYNC_RUN_ID){
@@ -452,14 +448,16 @@ int main(int argc, char ** argv) {
 
             }
             llama_kv_cache_seq_cp  (ctx_tgt, s_keep+seq_offset, 0, run_n_past_tgt, n_past_tgt);
+            llama_kv_cache_seq_cp  (ctx_dft, s_keep+seq_offset, 0, run_n_past_dft, n_past_dft);
             for (int i = 0; i < n_seq_dft; i++) {
                 llama_kv_cache_seq_rm  (ctx_tgt, i+seq_offset, -1, -1);
-
+                llama_kv_cache_seq_rm  (ctx_dft, i+seq_offset, -1, -1);
             }
 
 
             for (int i = 0; i < 2*n_seq_dft+1; i++) {
                 llama_kv_cache_seq_cp(ctx_tgt, 0, i, -1, n_past_tgt);
+                llama_kv_cache_seq_cp(ctx_dft, 0, i, -1, n_past_dft);
             }
 
 //            for (int i = 0; i < n_seq_dft; i++) {
@@ -529,6 +527,7 @@ int main(int argc, char ** argv) {
             run.s_keep = s_keep;
             run.run_id = ASYNC_RUN_ID;
             run.n_past_tgt = n_past_tgt;
+            run.n_past_dft = n_past_dft;
             run.speculative = false;
             run.n_past_max = n_past_tgt;
             run.cgraph = llama_start_async_decode(*ctx_tgt, run.batch);
@@ -550,13 +549,25 @@ int main(int argc, char ** argv) {
             }
         }
 
-//        if (!should_run_spec) {
-//            if (!should_run_async) {
-//                n_past_tgt++;
-//                n_past_dft++;
-//            }
-//            continue;
-//        }
+        if (!should_run_spec) {
+            //if (!should_run_async) {
+            //    n_past_tgt++;
+            //    n_past_dft++;
+            //}
+            continue;
+        }
+
+        for (int i = 0; i < n_seq_dft; i++) {
+            llama_kv_cache_seq_rm  (ctx_tgt, i+seq_offset, -1, -1);
+            llama_kv_cache_seq_cp(ctx_tgt, 0, i+seq_offset, -1, n_past_tgt);
+            llama_kv_cache_seq_rm  (ctx_dft, i+seq_offset, n_past_dft, -1);
+        }
+
+        for (int i = 0; i < 2*n_seq_dft+1; i++) {
+
+        }
+
+
 
 
         llama_batch_clear(batch_tgt);
@@ -571,14 +582,11 @@ int main(int argc, char ** argv) {
         drafts[0].tokens.push_back(id);
         //drafts[0].i_batch_tgt.push_back(0);
 
+        llama_kv_cache_seq_cp(ctx_dft, 0, seq_offset, -1, n_past_dft);
+
         llama_batch_clear(batch_dft);
-        llama_batch_add  (batch_dft, id, n_past_dft, { 0 }, true);
+        llama_batch_add  (batch_dft, id, n_past_dft, { seq_offset }, true);
         // batch_dft.n_tokens == 1 now
-
-        // Pipeline sync on draft pipeline
-
-        // Remove all tokens from all sequences after n_past_dft
-        llama_kv_cache_seq_rm(ctx_dft, -1, n_past_dft, -1);
 
 
 
@@ -596,6 +604,15 @@ int main(int argc, char ** argv) {
         }
         LOG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
 
+        for (int i = 0; i < 2*n_seq_dft+1; i++) {
+            llama_kv_cache_seq_cp(ctx_dft, seq_offset, i, n_past_dft, n_past_dft+1);
+        }
+
+        if (llama_node_id(ctx_dft) == 0) {
+//            llama_kv_cache_view_update(ctx_dft, &kvc_view_dft);
+//            dump_kv_cache_view_seqs(kvc_view_dft, 20);
+        }
+
         ++n_past_dft;
 
         if (n_predict > params.n_predict || has_eos) {
@@ -604,10 +621,12 @@ int main(int argc, char ** argv) {
 
         llama_sampling_cp(ctx_sampling, drafts[0].ctx_sampling);
 
-        int n_seq_cur  = 1;
+        int n_seq_cur  = 0;
+        int max_ran_seq = 0;
         int n_past_cur = n_past_dft;
 
         for (int s = 0; s < n_seq_dft; ++s) {
+            drafts[s].skip = true;
             drafts[s].active   = false;
             drafts[s].drafting = false;
         }
@@ -616,6 +635,7 @@ int main(int argc, char ** argv) {
 
         drafts[0].active      = true;
         drafts[0].drafting    = true;
+        drafts[0].skip = false;
 
         drafts[0].i_batch_dft = 0;
 
@@ -623,11 +643,7 @@ int main(int argc, char ** argv) {
         for (int i = 0; i < n_draft; ++i) {
             batch_dft.n_tokens = 0;
 
-            for (int s = 0; s < n_seq_dft; ++s) {
-                drafts[s].skip = false;
-            }
-
-            for (int s = 0; s < n_seq_dft; ++s) {
+            for (int s = 0; s <= max_ran_seq; ++s) {
                 if (!drafts[s].drafting || drafts[s].skip) {
                     continue;
                 }
@@ -677,11 +693,12 @@ int main(int argc, char ** argv) {
 
                 // attempt to split the branch if the probability is high enough
                 for (int f = 1; f < 8; ++f) {
-                    if (n_seq_cur < n_seq_dft && cur_p[f].p > p_split) {
+                    if (n_seq_cur < n_seq_dft-1 && cur_p[f].p > p_split) {
+                        n_seq_cur++;
                         LOG("splitting seq %3d into %3d\n", s, n_seq_cur);
 
-                        llama_kv_cache_seq_rm(ctx_dft,    n_seq_cur, -1, -1);
-                        llama_kv_cache_seq_cp(ctx_dft, s, n_seq_cur, -1, -1);
+                        llama_kv_cache_seq_rm(ctx_dft,    n_seq_cur+seq_offset, -1, -1);
+                        llama_kv_cache_seq_cp(ctx_dft, s+seq_offset, n_seq_cur+seq_offset, -1, -1);
 
                         // all previous tokens from this branch are now also part of the new branch
                         for (int t = 0; t < batch_tgt.n_tokens; ++t) {
@@ -694,20 +711,20 @@ int main(int argc, char ** argv) {
                             }
                         }
 
+
                         // copy the draft state
                         drafts[n_seq_cur].active   = true;
                         drafts[n_seq_cur].drafting = true;
-                        drafts[n_seq_cur].skip     = true;
+                        drafts[n_seq_cur].skip     = false;
 
                         drafts[n_seq_cur].tokens      = drafts[s].tokens;
-                        drafts[n_seq_cur].i_batch_dft = drafts[s].i_batch_dft;
                         drafts[n_seq_cur].i_batch_tgt = drafts[s].i_batch_tgt;
 
                         llama_sampling_cp(drafts[s].ctx_sampling, drafts[n_seq_cur].ctx_sampling);
 
                         sa.push_back(n_seq_cur);
 
-                        n_seq_cur++;
+
                     } else {
                         break;
                     }
@@ -728,7 +745,7 @@ int main(int argc, char ** argv) {
 
                     drafts[s].i_batch_tgt.push_back(batch_tgt.n_tokens);
 
-                    LOG("Adding drafted token %d to tgt\n", id);
+                    LOG("Adding drafted token %d to tgt, sequence %d, position %d, i_batch_tgt %d\n", id, s+seq_offset, n_past_tgt+i, batch_tgt.n_tokens);
                     llama_batch_add(batch_tgt, id, n_past_tgt + i, { s+seq_offset }, true);
 
                     // add the token to the batch for batched decoding with the draft model
@@ -736,7 +753,7 @@ int main(int argc, char ** argv) {
 
                     LOG("Adding drafted token %d to dft\n", id);
 
-                    llama_batch_add(batch_dft, id, n_past_cur, { s }, true);
+                    llama_batch_add(batch_dft, id, n_past_cur, { s+seq_offset }, true);
 
                     if (batch_tgt.n_tokens > n_draft) {
                         drafts[s].drafting = false;
@@ -754,6 +771,8 @@ int main(int argc, char ** argv) {
             llama_decode(ctx_dft, batch_dft);
             ++n_past_cur;
             ++n_drafted;
+
+            max_ran_seq = n_seq_cur;
 
             if (batch_tgt.n_tokens > n_draft) {
                 break;
@@ -818,6 +837,7 @@ int main(int argc, char ** argv) {
             }
             run.run_id = 0;
             run.n_past_tgt = n_past_tgt+1;
+            run.n_past_dft = n_past_dft;
             run.cgraph = llama_start_async_decode(*ctx_tgt, run.batch);
             tgt_cgraphs.push_front(run);
 

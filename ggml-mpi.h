@@ -29,6 +29,10 @@ extern "C" {
 
 #define GGML_MPI_SYNC_LOGITS 8
 
+#define GGML_MPI_CANCEL_RUN 9
+
+#define GGML_MPI_KV_SEQ_CP_BACK 10
+
 /**
  * The context used for MPI operations,
  * a program may make use of more than one
@@ -52,6 +56,8 @@ struct ggml_mpi_context;
 void ggml_mpi_backend_init(void);
 
 bool ggml_mpi_is_decoding(struct ggml_mpi_context * ctx_mpi);
+
+int ggml_mpi_status_count_int32(struct ggml_mpi_context * ctx_mpi);
 
 void ggml_mpi_graph_creation_post(struct ggml_mpi_context * ctx_mpi, struct ggml_cgraph * cgraph, int   n_layers);
 
@@ -112,9 +118,18 @@ void ggml_mpi_sync_ints_pipelined(
         int count,
         int tag
 );
+
+void ggml_mpi_sync_ints_pipelined_back(
+        struct ggml_mpi_context * ctx_mpi,
+        int32_t * vals,
+        int count,
+        int tag
+);
 // clear = 1, rm = 2, cp = 3, keep = 4, seq_shift = 5
 void ggml_mpi_probe(struct ggml_mpi_context * ctx_mpi, int src, int tag);
 int ggml_mpi_status_tag(struct ggml_mpi_context * ctx_mpi);
+
+int ggml_mpi_iprobe(struct ggml_mpi_context * ctx_mpi, int src, int tag);
 
 /**
  * Frees the given context, including the communicator. No MPI
@@ -165,6 +180,7 @@ bool ggml_mpi_eval_init(
                 int32_t         **  n_seq_ids,
                 int32_t         *** seq_id,
                 int8_t          **  logits,
+                int32_t         *   batch_id,
                 bool                receive_only);
 
 void ggml_mpi_synch_int(

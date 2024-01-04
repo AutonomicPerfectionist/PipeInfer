@@ -155,6 +155,7 @@ extern "C" {
         llama_pos    all_pos_0;  // used if pos == NULL
         llama_pos    all_pos_1;  // used if pos == NULL
         llama_seq_id all_seq_id; // used if seq_id == NULL
+        int32_t      batch_id;
     } llama_batch;
 
     struct llama_model_params {
@@ -304,6 +305,9 @@ extern "C" {
     // unless running MPI, in which case it is the rank of the node
     LLAMA_API int llama_node_id(struct llama_context * ctx);
 
+    LLAMA_API bool llama_mpi_iprobe(struct llama_context * lctx);
+
+    LLAMA_API void llama_cancel_run(struct llama_context * ctx, int32_t * canceled, int count);
 
     LLAMA_API int  llama_max_devices    (void);
     LLAMA_API bool llama_mmap_supported (void);
@@ -461,6 +465,13 @@ extern "C" {
                     llama_seq_id   seq_id_dst,
                        llama_pos   p0,
                        llama_pos   p1);
+
+LLAMA_API void llama_kv_cache_seq_cp_back(
+        struct llama_context * ctx,
+        llama_seq_id   seq_id_src,
+        llama_seq_id   seq_id_dst,
+        llama_pos   p0,
+        llama_pos   p1);
 
     // Removes all tokens that do not belong to the specified sequence
     LLAMA_API void llama_kv_cache_seq_keep(

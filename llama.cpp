@@ -1494,6 +1494,7 @@ struct llama_context {
 #ifdef GGML_USE_MPI
     ggml_mpi_context * ctx_mpi = NULL;
     ggml_mpi_context * ctx_mpi_orig = NULL;
+    std::unordered_map<int, bool> canceled_batches;
 #endif
 };
 
@@ -5420,7 +5421,9 @@ static struct ggml_cgraph * llama_build_graph(
     return result;
 }
 
-
+bool llama_mpi_iprobe(struct llama_context * lctx) {
+    return ggml_mpi_iprobe(lctx->ctx_mpi, ggml_mpi_prev_node(lctx->ctx_mpi), GGML_MPI_SYNC_LOGITS);
+}
 
 static struct ggml_cgraph * llama_decode_internal_phased(
             llama_context & lctx,
@@ -5498,7 +5501,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 #ifdef GGML_USE_MPI
         // TODO: needs fix after #3228
         if (!ggml_mpi_eval_init(lctx.ctx_mpi, &(batch.n_tokens), &(batch.token), &(batch.pos), &(batch.n_seq_id),
-                                &(batch.seq_id), &(batch.logits), false)) {
+                                &(batch.seq_id), &(batch.logits), &(batch.batch_id), false)) {
             return nullptr;
         }
         n_tokens = batch.n_tokens;
@@ -5556,9 +5559,20 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 #endif
 
 #ifdef GGML_USE_MPI
+        if (ggml_mpi_iprobe(lctx.ctx_mpi, ggml_mpi_next_node(lctx.ctx_mpi), GGML_MPI_CANCEL_RUN)) {
+            int count = ggml_mpi_status_count_int32(lctx.ctx_mpi);
+//            printf("Received async cancel run\n");
+            {
+                std::vector<int32_t> canceled(count, -1);
+                llama_cancel_run(&lctx, canceled.data(), canceled.size());
+
+            }
+        }
         if (!ggml_mpi_graph_compute_pre(lctx.ctx_mpi, gf)) {
             return nullptr;
         }
+        auto it = lctx.canceled_batches.find(batch.batch_id);
+        if (it == lctx.canceled_batches.end() || !lctx.canceled_batches[batch.batch_id]) {
 #endif
 
         // LLAMA_LOG_INFO("graph build time: %.3f ms (%d nodes, %d leafs)\n", (ggml_time_us() - t_start_us)/1000.0, gf->n_nodes, gf->n_leafs);
@@ -5597,27 +5611,28 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 #else
         ggml_graph_compute_helper(lctx.work_buffer, gf, n_threads);
 #endif
+// update the kv ring buffer
+            {
+                if (kv_self.has_shift) {
+                    kv_self.has_shift = false;
+                    for (uint32_t i = 0; i < kv_self.size; ++i) {
+                        kv_self.cells[i].delta = 0;
+                    }
+                }
 
+                kv_self.head += n_tokens;
+
+                // Ensure kv cache head points to a valid index.
+                if (kv_self.head >= kv_self.size) {
+                    kv_self.head = 0;
+                }
+            }
 #if GGML_USE_MPI
+        }
         ggml_mpi_graph_compute_post(lctx.ctx_mpi, gf);
 #endif
 
-        // update the kv ring buffer
-        {
-            if (kv_self.has_shift) {
-                kv_self.has_shift = false;
-                for (uint32_t i = 0; i < kv_self.size; ++i) {
-                    kv_self.cells[i].delta = 0;
-                }
-            }
 
-            kv_self.head += n_tokens;
-
-            // Ensure kv cache head points to a valid index.
-            if (kv_self.head >= kv_self.size) {
-                kv_self.head = 0;
-            }
-        }
 
 #ifdef GGML_PERF
         // print timing information per ggml operation (for debugging purposes)
@@ -9096,6 +9111,22 @@ void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, 
     llama_kv_cache_seq_cp(ctx->kv_self, seq_id_src, seq_id_dst, p0, p1);
 }
 
+void llama_kv_cache_seq_cp_back(struct llama_context * ctx, llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
+#ifdef GGML_USE_MPI
+    int32_t vals[4] = {seq_id_src, seq_id_dst, p0, p1};
+    ggml_mpi_sync_ints_pipelined_back(ctx->ctx_mpi, vals, 4, GGML_MPI_KV_SEQ_CP_BACK);
+    seq_id_src = vals[0];
+    seq_id_dst = vals[1];
+    p0 = vals[2];
+    p1 = vals[3];
+#endif
+    if (seq_id_src == seq_id_dst) {
+        return;
+    }
+
+    llama_kv_cache_seq_cp(ctx->kv_self, seq_id_src, seq_id_dst, p0, p1);
+}
+
 void llama_kv_cache_seq_keep(struct llama_context * ctx, llama_seq_id seq_id) {
 #ifdef GGML_USE_MPI
     int32_t vals[1] = {seq_id};
@@ -9611,11 +9642,12 @@ struct llama_batch llama_batch_get_one(
         /*all_pos_0      =*/ pos_0,
         /*all_pos_1      =*/ 1,
         /*all_seq_id     =*/ seq_id,
+        0
     };
 }
 
 struct llama_batch llama_batch_init(int32_t n_tokens, int32_t embd, int32_t n_seq_max) {
-    llama_batch batch = { 0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, };
+    llama_batch batch = { 0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, 0,};
 
     if (embd) {
         batch.embd = (float *) malloc(sizeof(float) * n_tokens * embd);
@@ -9655,6 +9687,7 @@ int llama_process_mpi_worker(
         struct llama_batch   batch) {
     ggml_mpi_probe(ctx->ctx_mpi, -1, -1);
     int tag = ggml_mpi_status_tag(ctx->ctx_mpi);
+    int32_t count;
     switch (tag) {
         case GGML_MPI_DECODE:
             return llama_decode_internal(*ctx, batch);
@@ -9668,6 +9701,9 @@ int llama_process_mpi_worker(
         case GGML_MPI_KV_SEQ_CP:
             llama_kv_cache_seq_cp(ctx, 0, 0, 0, 0);
             break;
+        case GGML_MPI_KV_SEQ_CP_BACK:
+            llama_kv_cache_seq_cp_back(ctx, 0, 0, 0, 0);
+            break;
         case GGML_MPI_KV_SEQ_KEEP:
             llama_kv_cache_seq_keep(ctx, 0);
             break;
@@ -9679,11 +9715,37 @@ int llama_process_mpi_worker(
             llama_backend_free();
             exit(0);
             break;
+        case GGML_MPI_CANCEL_RUN:
+            count = ggml_mpi_status_count_int32(ctx->ctx_mpi);
+//            printf("Received cancel run\n");
+            {
+                std::vector<int32_t> canceled(count, -1);
+                llama_cancel_run(ctx, canceled.data(), canceled.size());
+
+            }
+            break;
+        default:
+            printf("Unknown operation, exiting\n");
+            exit(1);
+            break;
     }
     return 0;
 }
 
 #endif
+
+void llama_cancel_run(struct llama_context * ctx, int32_t * canceled, int count) {
+    ggml_mpi_sync_ints_pipelined_back(ctx->ctx_mpi, canceled, count, GGML_MPI_CANCEL_RUN);
+    for (int i = 0; i < count; i++) {
+        int32_t run_id = canceled[i];
+        auto it = ctx->canceled_batches.find(run_id);
+        if (it != ctx->canceled_batches.end()) {
+            it->second = true;
+        } else {
+            ctx->canceled_batches[run_id] = true;
+        }
+    }
+}
 
 int llama_decode(
         struct llama_context * ctx,

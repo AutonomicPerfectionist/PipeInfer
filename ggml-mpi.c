@@ -43,7 +43,7 @@ void ggml_mpi_sync_pipelined(
 
 void ggml_mpi_backend_init(void) {
     int ret;
-    MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &ret);
+    MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &ret);
 }
 
 void ggml_mpi_backend_free(void) {
@@ -119,8 +119,24 @@ void ggml_mpi_probe(struct ggml_mpi_context * ctx_mpi, int src, int tag) {
     MPI_Probe((src >= 0) ? src : MPI_ANY_SOURCE, (tag >= 0) ? tag : MPI_ANY_TAG, ctx_mpi->comm, &(ctx_mpi->status));
 }
 
+int ggml_mpi_iprobe(struct ggml_mpi_context * ctx_mpi, int src, int tag) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return 0;
+    }
+
+    int ret;
+    MPI_Iprobe((src >= 0) ? src : MPI_ANY_SOURCE, (tag >= 0) ? tag : MPI_ANY_TAG, ctx_mpi->comm, &ret, &(ctx_mpi->status));
+    return ret;
+}
+
 int ggml_mpi_status_tag(struct ggml_mpi_context * ctx_mpi) {
     return ctx_mpi->status.MPI_TAG;
+}
+
+int ggml_mpi_status_count_int32(struct ggml_mpi_context * ctx_mpi) {
+    int32_t count;
+    MPI_Get_count(&ctx_mpi->status, MPI_INT32_T, &count);
+    return count;
 }
 
 int ggml_mpi_next_node(struct ggml_mpi_context * ctx_mpi) {
@@ -171,6 +187,30 @@ void ggml_mpi_sync_pipelined(
     }
 }
 
+void ggml_mpi_sync_pipelined_back(
+        struct ggml_mpi_context *   ctx_mpi,
+        void * val,
+        int count,
+        MPI_Datatype datatype,
+        int tag
+) {
+    if(ctx_mpi->comm == MPI_COMM_NULL) {
+        return;
+    }
+
+    //printf("Rank %d sync pipelined\n", ctx_mpi->rank);
+
+
+    if (ctx_mpi->rank != 0) {
+        MPI_Recv(val, count, datatype, ggml_mpi_next_node(ctx_mpi), tag, ctx_mpi->comm, MPI_STATUS_IGNORE);
+    }
+    if(ctx_mpi->rank != 1) {
+        const int retval = MPI_Bsend(val, count, datatype, ggml_mpi_prev_node(ctx_mpi), tag, ctx_mpi->comm);
+        GGML_ASSERT(retval == MPI_SUCCESS);
+
+    }
+}
+
 bool ggml_mpi_eval_init(
         struct ggml_mpi_context *   ctx_mpi,
                 int32_t         *   n_tokens,
@@ -179,11 +219,15 @@ bool ggml_mpi_eval_init(
                 int32_t         **  n_seq_ids,
                 int32_t         *** seq_id,
                 int8_t          **  logits,
+                int32_t         *   batch_id,
                 bool                receive_only) {
     if(ctx_mpi->comm == MPI_COMM_NULL) {
         return false;
     }
     int32_t old_n_tokens = *n_tokens;
+
+
+    ggml_mpi_sync_pipelined(ctx_mpi, batch_id, 1, MPI_INT, 0);
 
 
     ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, 0);
@@ -250,6 +294,15 @@ void ggml_mpi_sync_ints_pipelined(
         int tag
 ) {
     ggml_mpi_sync_pipelined(ctx_mpi, vals, count, MPI_INT32_T, tag);
+}
+
+void ggml_mpi_sync_ints_pipelined_back(
+        struct ggml_mpi_context * ctx_mpi,
+        int32_t * vals,
+        int count,
+        int tag
+) {
+    ggml_mpi_sync_pipelined_back(ctx_mpi, vals, count, MPI_INT32_T, tag);
 }
 
 void ggml_mpi_synch_int(
@@ -425,7 +478,9 @@ uint16_t** ggml_mpi_split_range(
     }
 
     ranges[ctx_mpi->size-1][0] = next_layer;
-    ranges[ctx_mpi->size-1][1] = MIN(end, next_layer + (node_weights[ctx_mpi->size-1] * range_length) + start);
+//    ranges[ctx_mpi->size-1][1] = MIN(end, next_layer + (node_weights[ctx_mpi->size-1] * range_length) + start);
+    ranges[ctx_mpi->size-1][1] = end;
+
     return ranges;
 
 }

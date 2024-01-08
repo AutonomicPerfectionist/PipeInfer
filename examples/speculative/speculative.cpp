@@ -678,6 +678,7 @@ int main(int argc, char ** argv) {
 
         int first_run = true;
 
+//        bool is_waiting = llama_mpi_iprobe(ctx_tgt);
         bool is_waiting = false;
 //        llama_swap_comm(ctx_tgt);
 //        llama_sync_token(ctx_tgt, reinterpret_cast<llama_token *>(&is_waiting), 0);
@@ -708,7 +709,7 @@ int main(int argc, char ** argv) {
             free_sequence_offsets.push_back(seq_offset);
         }
         int iter = 0;
-        while(!is_waiting) {
+        while(iter < 2 || !is_waiting) {
 
 
 

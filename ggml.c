@@ -15718,10 +15718,10 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     int node_n = -1;
 
     while (true) {
-        if (cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) {
-            state->shared->node_n += 1;
-            return (thread_ret_t) GGML_EXIT_ABORTED;
-        }
+//        if (cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) {
+//            state->shared->node_n += 1;
+//            return (thread_ret_t) GGML_EXIT_ABORTED;
+//        }
         if (atomic_fetch_sub(&state->shared->n_active, 1) == 1) {
             // all other threads are finished and spinning
             // do finalize and init here so we don't have synchronize again

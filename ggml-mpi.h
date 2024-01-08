@@ -33,6 +33,8 @@ extern "C" {
 
 #define GGML_MPI_KV_SEQ_CP_BACK 10
 
+#define GGML_MPI_TRANS_ID 11
+
 /**
  * The context used for MPI operations,
  * a program may make use of more than one
@@ -46,6 +48,12 @@ extern "C" {
  */
 struct ggml_mpi_context;
 
+
+int ggml_mpi_trans_id(struct ggml_mpi_context * ctx_mpi);
+
+int ggml_mpi_recv_trans_id(struct ggml_mpi_context * ctx_mpi);
+
+void ggml_mpi_inc_trans_id(struct ggml_mpi_context * ctx_mpi);
 
 /**
  * Initialize the MPI library and the GGML MPI backend.

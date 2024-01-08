@@ -31,7 +31,21 @@ struct ggml_mpi_context {
     bool res;
     bool embed;
     void* send_buffer;
+    int trans_id;
+    int recv_trans_id;
 };
+
+int ggml_mpi_recv_trans_id(struct ggml_mpi_context * ctx_mpi) {
+    return ctx_mpi->recv_trans_id;
+}
+
+int ggml_mpi_trans_id(struct ggml_mpi_context * ctx_mpi) {
+    return ctx_mpi->trans_id;
+}
+
+void ggml_mpi_inc_trans_id(struct ggml_mpi_context * ctx_mpi) {
+    ctx_mpi->trans_id++;
+}
 
 void ggml_mpi_sync_pipelined(
         struct ggml_mpi_context *   ctx_mpi,
@@ -86,6 +100,11 @@ void ggml_mpi_free(struct ggml_mpi_context * ctx) {
     if(ctx->comm == MPI_COMM_NULL) {
         return;
     }
+
+    if (ctx->comm == NULL) {
+        return;
+    }
+
     ggml_mpi_sync_pipelined(ctx, NULL, 0, MPI_INT8_T, 6);
     MPI_Comm_free(&(ctx->comm));
     free(ctx);
@@ -294,6 +313,10 @@ void ggml_mpi_sync_ints_pipelined(
         int tag
 ) {
     ggml_mpi_sync_pipelined(ctx_mpi, vals, count, MPI_INT32_T, tag);
+    int old_trans = ctx_mpi->trans_id;
+    ggml_mpi_sync_pipelined(ctx_mpi, &ctx_mpi->trans_id, 1, MPI_INT32_T, GGML_MPI_TRANS_ID);
+    ctx_mpi->recv_trans_id = ctx_mpi->trans_id;
+    ctx_mpi->trans_id = old_trans;
 }
 
 void ggml_mpi_sync_ints_pipelined_back(
@@ -303,6 +326,10 @@ void ggml_mpi_sync_ints_pipelined_back(
         int tag
 ) {
     ggml_mpi_sync_pipelined_back(ctx_mpi, vals, count, MPI_INT32_T, tag);
+    int old_trans = ctx_mpi->trans_id;
+    ggml_mpi_sync_pipelined_back(ctx_mpi, &ctx_mpi->trans_id, 1, MPI_INT32_T, GGML_MPI_TRANS_ID);
+    ctx_mpi->recv_trans_id = ctx_mpi->trans_id;
+    ctx_mpi->trans_id = old_trans;
 }
 
 void ggml_mpi_synch_int(
@@ -348,7 +375,7 @@ void ggml_mpi_send_float_array_async(
         int dest,
         int tag
 ) {
-//    printf("Rank %d send float array async, count=%d\n", ctx_mpi->rank, arr_size);
+//    printf("Rank %d send float array async, count=%d, val==null: %d\n", ctx_mpi->rank, arr_size, val == NULL);
     int ret = MPI_Bsend(val, arr_size, MPI_FLOAT, dest, tag, ctx_mpi->comm);
     GGML_ASSERT(ret == MPI_SUCCESS);
 }

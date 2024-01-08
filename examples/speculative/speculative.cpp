@@ -44,7 +44,7 @@ struct seq_async_run {
 };
 
 void check_for_cancel(llama_context *ctx_tgt, int n_past_tgt, std::deque<struct seq_async_run> &tgt_cgraphs,
-                      std::vector<llama_token> &generated);
+                      std::vector<llama_token> &generated, const int n_seq_dft);
 
 int main(int argc, char ** argv) {
     gpt_params params;
@@ -277,7 +277,7 @@ int main(int argc, char ** argv) {
         int i_dft  = 0;
         int s_keep = 0;
 
-        check_for_cancel(ctx_tgt, n_past_tgt, tgt_cgraphs, generated);
+        check_for_cancel(ctx_tgt, n_past_tgt, tgt_cgraphs, generated, n_seq_dft);
 
         if (!tgt_cgraphs.empty()) {
             struct seq_async_run run = tgt_cgraphs.back();
@@ -465,7 +465,7 @@ int main(int argc, char ** argv) {
             continue;
         }
 
-        check_for_cancel(ctx_tgt, n_past_tgt, tgt_cgraphs, generated);
+        check_for_cancel(ctx_tgt, n_past_tgt, tgt_cgraphs, generated, n_seq_dft);
 
         // Pipeline syncing cache ops
 //        llama_kv_cache_seq_keep(ctx_dft, s_keep);
@@ -1162,39 +1162,48 @@ int main(int argc, char ** argv) {
 }
 
 void check_for_cancel(llama_context *ctx_tgt, int n_past_tgt, std::deque<struct seq_async_run> &tgt_cgraphs,
-                      std::vector<llama_token> &generated) {
+                      std::vector<llama_token> &generated, const int n_seq_dft) {
     std::vector<int> canceled_batches;
     for (auto &run : tgt_cgraphs) {
         if(!run.canceled) {
             bool correct_prefix = true;
 
             if (run.speculative && n_past_tgt >= run.prefix_n_past_tgt) {
-                size_t draft_index = 0;
-                int prev_token = -1;
-                int prev_gen_token = -1;
-                std::vector<llama_token> concat_tokens = run.drafts[0].prefix_tokens;
-                concat_tokens.insert(concat_tokens.end(), run.drafts[0].tokens.begin(),
-                                     run.drafts[0].tokens.end());
-
-
-                LOG("Prefix tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, run.drafts[0].prefix_tokens).c_str());
-
-                LOG("Concat tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, concat_tokens).c_str());
-
-
-                size_t index = run.prefix_n_past_tgt + draft_index;
-                LOG("Looping over run starting at gen index %zu, draft index %zu, prefix_n_past_tgt %d, n_past_tgt %d, generated size %zu\n", index, draft_index, run.prefix_n_past_tgt, n_past_tgt, generated.size());
-                while (index < generated.size() && draft_index < concat_tokens.size() && generated.size() > (size_t)run.prefix_n_past_tgt) {
-                    LOG("Checking draft at index %zu and generated index %zu\n", draft_index, index);
-                    if (generated.at(index) != concat_tokens[draft_index]) {
-                        LOG("Found non-matching prefix at generated index %zu, draft index %zu, gen token %d, draft token %d, prev draft token %d, prev gen token %d\n", index, draft_index, generated.at(index), concat_tokens[draft_index], prev_token, prev_gen_token);
-                        correct_prefix = false;
-                        break;
+                for (int draft_id = 0; draft_id < n_seq_dft; draft_id++) {
+                    if (!run.drafts[draft_id].tokens.empty()) {
+                        correct_prefix = true;
                     }
-                    prev_token = concat_tokens[draft_index];
-                    prev_gen_token = generated[index];
-                    draft_index++;
-                    index = run.prefix_n_past_tgt + draft_index;
+                    size_t draft_index = 0;
+                    int prev_token = -1;
+                    int prev_gen_token = -1;
+                    std::vector<llama_token> concat_tokens = run.drafts[draft_id].prefix_tokens;
+                    concat_tokens.insert(concat_tokens.end(), run.drafts[draft_id].tokens.begin(),
+                                         run.drafts[draft_id].tokens.end());
+
+
+                    LOG("Prefix tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, run.drafts[draft_id].prefix_tokens).c_str());
+
+                    LOG("Concat tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, concat_tokens).c_str());
+
+
+                    size_t index = run.prefix_n_past_tgt + draft_index;
+                    LOG("Looping over run starting at gen index %zu, draft index %zu, prefix_n_past_tgt %d, n_past_tgt %d, generated size %zu\n",
+                        index, draft_index, run.prefix_n_past_tgt, n_past_tgt, generated.size());
+                    while (index < generated.size() && draft_index < concat_tokens.size() &&
+                           generated.size() > (size_t) run.prefix_n_past_tgt) {
+                        LOG("Checking draft at index %zu and generated index %zu\n", draft_index, index);
+                        if (generated.at(index) != concat_tokens[draft_index]) {
+                            LOG("Found non-matching prefix at generated index %zu, draft index %zu, gen token %d, draft token %d, prev draft token %d, prev gen token %d\n",
+                                index, draft_index, generated.at(index), concat_tokens[draft_index], prev_token,
+                                prev_gen_token);
+                            correct_prefix = false;
+                            break;
+                        }
+                        prev_token = concat_tokens[draft_index];
+                        prev_gen_token = generated[index];
+                        draft_index++;
+                        index = run.prefix_n_past_tgt + draft_index;
+                    }
                 }
             }
 

@@ -43,6 +43,9 @@ struct seq_async_run {
     bool canceled;
 };
 
+void check_for_cancel(llama_context *ctx_tgt, int n_past_tgt, std::deque<struct seq_async_run> &tgt_cgraphs,
+                      std::vector<llama_token> &generated);
+
 int main(int argc, char ** argv) {
     gpt_params params;
 
@@ -259,7 +262,7 @@ int main(int argc, char ** argv) {
 
     int run_id = 0;
     int offset = 1;
-    int run_n_past_tgt = n_past_tgt;
+    int run_n_past_tgt = n_past_tgt-1;
     int run_max_n_past = n_past_tgt;
     int run_n_past_dft = n_past_dft;
     int seq_offset = free_sequence_offsets.front();
@@ -274,65 +277,7 @@ int main(int argc, char ** argv) {
         int i_dft  = 0;
         int s_keep = 0;
 
-        std::vector<int> canceled_batches;
-        for (auto &run : tgt_cgraphs) {
-            if(!run.canceled) {
-                bool correct_prefix = true;
-
-                if (run.speculative && n_past_tgt >= run.prefix_n_past_tgt) {
-                    size_t draft_index = 0;
-                    int prev_token = -1;
-                    int prev_gen_token = -1;
-                    std::vector<llama_token> concat_tokens = run.drafts[s_keep].prefix_tokens;
-                    concat_tokens.insert(concat_tokens.end(), run.drafts[s_keep].tokens.begin(),
-                                         run.drafts[s_keep].tokens.end());
-
-
-                    LOG("Prefix tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, run.drafts[s_keep].prefix_tokens).c_str());
-
-                    LOG("Concat tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, concat_tokens).c_str());
-
-
-                    size_t index = (generated.size() - 1) - (n_past_tgt - run.prefix_n_past_tgt) + draft_index;
-                    while (index < generated.size() && draft_index < concat_tokens.size()) {
-                        LOG("Checking draft at index %zu and generated index %zu\n", draft_index, index);
-                        if (generated.at(index) != concat_tokens[draft_index]) {
-                            LOG("Found non-matching prefix at generated index %zu, draft index %zu, gen token %d, draft token %d, prev draft token %d, prev gen token %d\n", index, draft_index, generated.at(index), concat_tokens[draft_index], prev_token, prev_gen_token);
-                            correct_prefix = false;
-                            break;
-                        }
-                        prev_token = concat_tokens[draft_index];
-                        prev_gen_token = generated[index];
-                        draft_index++;
-                        index = (generated.size() - 1) - (n_past_tgt - run.prefix_n_past_tgt) + draft_index;
-                    }
-                }
-
-
-                if (run.n_past_max <= n_past_tgt || !correct_prefix) {
-                    LOG("Cancelling run with ID %d, batch ID %d, run.npast_max %d, run.n_past_tgt %d, n_past_tgt %d, run_speculative %d, tokens[0] %d, generated: %d, generated index: %zu\n",
-                        run.run_id, run.batch.batch_id, run.n_past_max, run.n_past_tgt, n_past_tgt, run.speculative,
-                        run.drafts[s_keep].tokens[0], (n_past_tgt < run.n_past_tgt) ? -1 : generated.at(
-                            generated.size() - (n_past_tgt - run.n_past_tgt + 1)),
-                        generated.size() - (n_past_tgt - run.n_past_tgt + 1));
-
-                    if (run.speculative) {
-                        // TODO put these in a vector so they are transmitted in a burst
-                        canceled_batches.push_back(run.batch.batch_id);
-                    }
-                    run.canceled = true;
-////                }
-//
-//                if (run_speculative) {
-//                    free_sequence_offsets.push_back(seq_offset);
-//                }
-                }
-            }
-        }
-
-        if (!canceled_batches.empty()) {
-            llama_cancel_run(ctx_tgt, canceled_batches.data(), canceled_batches.size());
-        }
+        check_for_cancel(ctx_tgt, n_past_tgt, tgt_cgraphs, generated);
 
         if (!tgt_cgraphs.empty()) {
             struct seq_async_run run = tgt_cgraphs.back();
@@ -438,7 +383,7 @@ int main(int argc, char ** argv) {
             LOG("Sampled token: %d ('%s'), n_past_tgt: %d, run_n_past_tgt + i_dft: %d, drafts[keeps[0]].i_batch_tgt[i_dft]: %d\n", id, token_str.c_str(), n_past_tgt, run_n_past_tgt + i_dft, drafts[keeps[0]].i_batch_tgt[i_dft]);
 
 
-            if (run_n_past_tgt + i_dft == n_past_tgt) {
+            if (run_n_past_tgt + i_dft == n_past_tgt-1) {
                 any_match = true;
                 ++n_predict;
                 llama_sampling_accept(ctx_sampling, ctx_tgt, id, true);
@@ -491,13 +436,13 @@ int main(int argc, char ** argv) {
                 }
 
                 if (matches) {
-                    if (run_n_past_tgt + i_dft == n_past_tgt) {
+                    if (run_n_past_tgt + i_dft == n_past_tgt-1) {
                         ++n_accept;
                         ++n_past_tgt;
                         ++n_past_dft;
                     }
                     ++i_dft;
-                    if (run_id != ASYNC_RUN_ID && run_n_past_tgt + i_dft <= n_past_tgt) {
+                    if (run_id != ASYNC_RUN_ID && run_n_past_tgt + i_dft < n_past_tgt) {
                         continue;
                     }
                 }
@@ -519,6 +464,8 @@ int main(int argc, char ** argv) {
 //            fprintf(stderr, "No match\n");
             continue;
         }
+
+        check_for_cancel(ctx_tgt, n_past_tgt, tgt_cgraphs, generated);
 
         // Pipeline syncing cache ops
 //        llama_kv_cache_seq_keep(ctx_dft, s_keep);
@@ -694,9 +641,9 @@ int main(int argc, char ** argv) {
             run.i_dft = offset - 1;
             run.s_keep = s_keep;
             run.run_id = ASYNC_RUN_ID;
-            run.n_past_tgt = n_past_tgt;
-            run.prefix_n_past_tgt = n_past_tgt;
-            run.n_past_max = n_past_tgt + 1;
+            run.n_past_tgt = n_past_tgt-1;
+            run.prefix_n_past_tgt = n_past_tgt-1;
+            run.n_past_max = n_past_tgt;
             run.n_past_dft = n_past_dft;
             run.speculative = false;
             run.cgraph = llama_start_async_decode(*ctx_tgt, run.batch);
@@ -1140,8 +1087,8 @@ int main(int argc, char ** argv) {
                     run.batch.logits[i] = batch_tgt.logits[i];
                 }
                 run.run_id = 0;
-                run.n_past_tgt = spec_past_tgt+1;
-                run.prefix_n_past_tgt = n_past_tgt+1;
+                run.n_past_tgt = spec_past_tgt;
+                run.prefix_n_past_tgt = n_past_tgt;
                 run.n_past_dft = n_past_dft;
                 run.n_past_max = spec_past_tgt + max_draft_tokens;
                 run.cgraph = llama_start_async_decode(*ctx_tgt, run.batch);
@@ -1211,4 +1158,68 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "\n\n");
 
     return 0;
+}
+
+void check_for_cancel(llama_context *ctx_tgt, int n_past_tgt, std::deque<struct seq_async_run> &tgt_cgraphs,
+                      std::vector<llama_token> &generated) {
+    std::vector<int> canceled_batches;
+    for (auto &run : tgt_cgraphs) {
+        if(!run.canceled) {
+            bool correct_prefix = true;
+
+            if (run.speculative && n_past_tgt >= run.prefix_n_past_tgt) {
+                size_t draft_index = 0;
+                int prev_token = -1;
+                int prev_gen_token = -1;
+                std::vector<llama_token> concat_tokens = run.drafts[0].prefix_tokens;
+                concat_tokens.insert(concat_tokens.end(), run.drafts[0].tokens.begin(),
+                                     run.drafts[0].tokens.end());
+
+
+                LOG("Prefix tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, run.drafts[0].prefix_tokens).c_str());
+
+                LOG("Concat tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx_tgt, concat_tokens).c_str());
+
+
+                size_t index = run.prefix_n_past_tgt + draft_index;
+                LOG("Looping over run starting at gen index %zu, draft index %zu, prefix_n_past_tgt %d, n_past_tgt %d, generated size %zu\n", index, draft_index, run.prefix_n_past_tgt, n_past_tgt, generated.size());
+                while (index < generated.size() && draft_index < concat_tokens.size() && generated.size() > (size_t)run.prefix_n_past_tgt) {
+                    LOG("Checking draft at index %zu and generated index %zu\n", draft_index, index);
+                    if (generated.at(index) != concat_tokens[draft_index]) {
+                        LOG("Found non-matching prefix at generated index %zu, draft index %zu, gen token %d, draft token %d, prev draft token %d, prev gen token %d\n", index, draft_index, generated.at(index), concat_tokens[draft_index], prev_token, prev_gen_token);
+                        correct_prefix = false;
+                        break;
+                    }
+                    prev_token = concat_tokens[draft_index];
+                    prev_gen_token = generated[index];
+                    draft_index++;
+                    index = run.prefix_n_past_tgt + draft_index;
+                }
+            }
+
+
+            if (run.n_past_max < n_past_tgt || !correct_prefix) {
+                LOG("Cancelling run with ID %d, batch ID %d, run.npast_max %d, run.n_past_tgt %d, n_past_tgt %d, run_speculative %d, tokens[0] %d, generated: %d, generated index: %zu\n",
+                    run.run_id, run.batch.batch_id, run.n_past_max, run.n_past_tgt, n_past_tgt, run.speculative,
+                    run.drafts[0].tokens[0], (n_past_tgt < run.n_past_tgt) ? -1 : generated.at(
+                        generated.size() - (n_past_tgt - run.n_past_tgt + 1)),
+                    generated.size() - (n_past_tgt - run.n_past_tgt + 1));
+
+                if (run.speculative) {
+                    // TODO put these in a vector so they are transmitted in a burst
+                    canceled_batches.push_back(run.batch.batch_id);
+                }
+                run.canceled = true;
+////                }
+//
+//                if (run_speculative) {
+//                    free_sequence_offsets.push_back(seq_offset);
+//                }
+            }
+        }
+    }
+
+    if (!canceled_batches.empty()) {
+        llama_cancel_run(ctx_tgt, canceled_batches.data(), canceled_batches.size());
+    }
 }

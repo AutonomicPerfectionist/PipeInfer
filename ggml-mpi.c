@@ -74,8 +74,9 @@ struct ggml_mpi_context * ggml_mpi_init(void) {
     ctx->asyncRecvWaiting = false;
     ctx->running_decode = false;
     ctx->async = false;
-    ctx->send_buffer = calloc(1, 128*1024*1024); // 128MB buffer
-    MPI_Buffer_attach(ctx->send_buffer, 4096*1024*32);
+    const int buffer_size = 128*1024*1024;
+    ctx->send_buffer = calloc(1, buffer_size); // 128MB buffer
+    MPI_Buffer_attach(ctx->send_buffer, buffer_size);
 
     return ctx;
 }
@@ -105,7 +106,9 @@ void ggml_mpi_free(struct ggml_mpi_context * ctx) {
         return;
     }
 
-    ggml_mpi_sync_pipelined(ctx, NULL, 0, MPI_INT8_T, 6);
+    ggml_mpi_sync_pipelined(ctx, NULL, 0, MPI_INT8_T, GGML_MPI_SHUTDOWN);
+    int buffer_size = 128*1024*1024;
+    MPI_Buffer_detach(ctx->send_buffer, &buffer_size);
     MPI_Comm_free(&(ctx->comm));
     free(ctx);
 }
@@ -246,10 +249,10 @@ bool ggml_mpi_eval_init(
     int32_t old_n_tokens = *n_tokens;
 
 
-    ggml_mpi_sync_pipelined(ctx_mpi, batch_id, 1, MPI_INT, 0);
+    ggml_mpi_sync_pipelined(ctx_mpi, batch_id, 1, MPI_INT, GGML_MPI_BATCH_ID);
 
 
-    ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, 0);
+    ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, GGML_MPI_N_TOKENS);
 
 
     // For now, we assume that the pos, seq_ids, tokens, etc have been
@@ -260,10 +263,10 @@ bool ggml_mpi_eval_init(
     //    *tokens = realloc(*tokens, *n_tokens * sizeof(int32_t ));
     //}
 
-    ggml_mpi_sync_pipelined(ctx_mpi, *tokens, *n_tokens, MPI_INT32_T, 0);
+    ggml_mpi_sync_pipelined(ctx_mpi, *tokens, *n_tokens, MPI_INT32_T, GGML_MPI_TOKENS);
 
 
-    ggml_mpi_sync_pipelined(ctx_mpi, *n_seq_ids, *n_tokens, MPI_INT32_T, 0);
+    ggml_mpi_sync_pipelined(ctx_mpi, *n_seq_ids, *n_tokens, MPI_INT32_T, GGML_MPI_N_SEQ_IDS);
 
     // We need to know the total number of sequence
     // ids, so we count them all up
@@ -290,8 +293,8 @@ bool ggml_mpi_eval_init(
 
 
 
-    ggml_mpi_sync_pipelined(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, 0);
-    ggml_mpi_sync_pipelined(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, 0);
+    ggml_mpi_sync_pipelined(ctx_mpi, *pos, *n_tokens, MPI_INT32_T, GGML_MPI_POS);
+    ggml_mpi_sync_pipelined(ctx_mpi, flattened_seq_ids, total_n_seq_ids, MPI_INT32_T, GGML_MPI_SEQ_IDS);
 
     current_index = 0;
     for (int32_t i = 0; i < *n_tokens; i++) {
@@ -326,10 +329,10 @@ void ggml_mpi_sync_ints_pipelined_back(
         int tag
 ) {
     ggml_mpi_sync_pipelined_back(ctx_mpi, vals, count, MPI_INT32_T, tag);
-    int old_trans = ctx_mpi->trans_id;
-    ggml_mpi_sync_pipelined_back(ctx_mpi, &ctx_mpi->trans_id, 1, MPI_INT32_T, GGML_MPI_TRANS_ID);
-    ctx_mpi->recv_trans_id = ctx_mpi->trans_id;
-    ctx_mpi->trans_id = old_trans;
+//    int old_trans = ctx_mpi->trans_id;
+//    ggml_mpi_sync_pipelined_back(ctx_mpi, &ctx_mpi->trans_id, 1, MPI_INT32_T, GGML_MPI_TRANS_ID);
+//    ctx_mpi->recv_trans_id = ctx_mpi->trans_id;
+//    ctx_mpi->trans_id = old_trans;
 }
 
 void ggml_mpi_synch_int(
@@ -412,6 +415,8 @@ static void ggml_mpi_tensor_send(struct ggml_mpi_context * ctx_mpi, struct ggml_
     if(ctx_mpi->comm == MPI_COMM_NULL) {
         return;
     }
+
+//    printf("\nSending tensor of size %zu from node %d to node %d", ggml_nelements(t), ctx_mpi->rank, mpi_rank_dst);
 //    printf("Rank %d tensor send\n", ctx_mpi->rank);
     MPI_Datatype mpi_type;
 
@@ -436,6 +441,10 @@ static void ggml_mpi_tensor_recv(struct ggml_mpi_context * ctx_mpi, struct ggml_
         case GGML_TYPE_F32: mpi_type = MPI_FLOAT;   break;
         default: GGML_ASSERT(false && "not implemented");
     }
+
+//    printf("\nReceiving tensor of size %zu, at node %d, from node %d", ggml_nelements(t), ctx_mpi->rank, mpi_rank_src);
+
+
     const int retval = MPI_Recv(t->data, ggml_nelements(t), mpi_type, mpi_rank_src, GGML_MPI_TRANSFER_TENSORS, ctx_mpi->comm, MPI_STATUS_IGNORE);
     GGML_ASSERT(retval == MPI_SUCCESS);
 }

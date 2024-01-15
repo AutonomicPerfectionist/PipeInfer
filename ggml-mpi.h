@@ -35,6 +35,20 @@ extern "C" {
 
 #define GGML_MPI_TRANS_ID 11
 
+#define GGML_MPI_BATCH_ID 12
+
+#define GGML_MPI_N_TOKENS 13
+
+#define GGML_MPI_TOKENS 14
+
+#define GGML_MPI_N_SEQ_IDS 15
+
+#define GGML_MPI_SEQ_IDS 16
+
+#define GGML_MPI_POS 17
+
+#define GGML_MPI_BEGIN_TRANSACTION 18
+
 /**
  * The context used for MPI operations,
  * a program may make use of more than one

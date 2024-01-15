@@ -531,7 +531,7 @@ extern "C" {
         int n_threads;
 
         // abort ggml_graph_compute when true
-        bool (*abort_callback)(void * data);
+        bool (*abort_callback)(int ith, void * data);
         void * abort_callback_data;
     };
 

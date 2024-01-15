@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string>
+
 #ifdef LLAMA_SHARED
 #    if defined(_WIN32) && !defined(__MINGW32__)
 #        ifdef LLAMA_BUILD
@@ -280,10 +282,10 @@ extern "C" {
     LLAMA_API void llama_sync_token(struct llama_context * ctx, llama_token * token, int root);
 
     LLAMA_API struct ggml_cgraph * llama_start_async_decode(struct llama_context & lctx,
-                                                                   struct llama_batch &  batch);
+                                                                   struct llama_batch   batch);
 
     LLAMA_API int llama_finish_async_decode(struct llama_context & lctx,
-                                                                    struct llama_batch  & batch,
+                                                                    struct llama_batch   batch,
                                                                     struct ggml_cgraph * cgraph);
 
     LLAMA_API void llama_sync_token_data(struct llama_context * ctx, llama_token_data * data, int root);
@@ -467,6 +469,13 @@ extern "C" {
                        llama_pos   p1);
 
 LLAMA_API void llama_kv_cache_seq_cp_back(
+        struct llama_context * ctx,
+        llama_seq_id   seq_id_src,
+        llama_seq_id   seq_id_dst,
+        llama_pos   p0,
+        llama_pos   p1);
+
+LLAMA_API void llama_kv_cache_seq_cp_sync_bi(
         struct llama_context * ctx,
         llama_seq_id   seq_id_src,
         llama_seq_id   seq_id_dst,
@@ -657,7 +666,10 @@ LLAMA_API void llama_kv_cache_seq_cp_back(
                            llama_token   token,
                                   char * buf,
                                   int    length);
-
+extern "C++" {
+// Dump the KV cache view showing individual sequences in each cell (long output).
+std::string dump_kv_cache_view_seqs(const llama_kv_cache_view &view, int row_size = 40);
+}
     //
     // Grammar
     //

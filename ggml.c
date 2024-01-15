@@ -15745,6 +15745,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
             // distribute new work or execute it direct if 1T
             while (++node_n < cgraph->n_nodes) {
+                if (cplan->abort_callback && cplan->abort_callback(state->ith, cplan->abort_callback_data)) {
+                    break;
+                }
                 GGML_PRINT_DEBUG_5("%s: %d/%d\n", __func__, node_n, cgraph->n_nodes);
 
                 struct ggml_tensor * node = cgraph->nodes[node_n];
@@ -15777,9 +15780,6 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
                     break;
                 }
 
-                if (cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) {
-                    break;
-                }
             }
 
             atomic_store(&state->shared->n_active, n_threads);
@@ -15798,15 +15798,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
                 node_n = atomic_load(&state->shared->node_n);
                 if (node_n != last) break;
+                if (cplan->abort_callback && cplan->abort_callback(state->ith, cplan->abort_callback_data)) {
+                    break;
+                }
             };
         }
 
         // check if we should stop
         if (node_n >= cgraph->n_nodes) break;
+        if (cplan->abort_callback && cplan->abort_callback(state->ith, cplan->abort_callback_data)) {
+            break;
+        }
 
         /* COMPUTE */
         struct ggml_tensor * node = cgraph->nodes[node_n];
         const int n_tasks = ggml_get_n_tasks(node, n_threads);
+
 
         struct ggml_compute_params params = {
             /*.type  =*/ GGML_TASK_COMPUTE,
@@ -15819,6 +15826,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         if (state->ith < n_tasks) {
             ggml_compute_forward(&params, node);
         }
+
+
+
     }
 
     return GGML_EXIT_SUCCESS;
@@ -16035,6 +16045,10 @@ int ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
         /*.abort_callback_data     =*/ NULL,
     };
     struct ggml_compute_state * workers = alloca(sizeof(struct ggml_compute_state)*n_threads);
+
+    if (cplan->abort_callback && cplan->abort_callback(0, cplan->abort_callback_data)) {
+        return GGML_EXIT_SUCCESS;
+    }
 
     // create thread pool
     if (n_threads > 1) {

@@ -448,6 +448,12 @@ bool gpt_params_parse_ex(int argc, char ** argv, gpt_params & params) {
                 break;
             }
             params.p_split = std::stof(argv[i]);
+        }else if (arg == "--p-recovery" || arg == "-pr") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.p_recovery = std::stof(argv[i]);
         } else if (arg == "-m" || arg == "--model") {
             if (++i >= argc) {
                 invalid_param = true;
@@ -854,6 +860,7 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     printf("  -ns N, --sequences N  number of sequences to decode (default: %d)\n", params.n_sequences);
     printf("  -pa N, --p-accept N   speculative decoding accept probability (default: %.1f)\n", (double)params.p_accept);
     printf("  -ps N, --p-split N    speculative decoding split probability (default: %.1f)\n", (double)params.p_split);
+    printf("  -pr N, --p-recovery N PipeInfer recovery probability (default: %.1f)\n", (double)params.p_recovery);
     printf("  -cb, --cont-batching  enable continuous batching (a.k.a dynamic batching) (default: disabled)\n");
     printf("  --mmproj MMPROJ_FILE  path to a multimodal projector file for LLaVA. see examples/llava/README.md\n");
     printf("  --image IMAGE_FILE    path to an image file. use with multimodal models\n");
@@ -1483,49 +1490,4 @@ void dump_kv_cache_view(const llama_kv_cache_view & view, int row_size) {
     printf("\n=== Done dumping\n");
 }
 
-void dump_kv_cache_view_seqs(const llama_kv_cache_view & view, int row_size) {
-    static const char slot_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-    printf("=== Dumping KV cache. total cells %d, max sequences per cell %d, populated cells %d, total tokens in cache %d, largest empty slot=%d @ %d\n",
-        view.n_cells, view.n_max_seq, view.used_cells, view.token_count, view.max_contiguous, view.max_contiguous_idx);
-
-    std::unordered_map<llama_seq_id, size_t> seqs;
-    llama_kv_cache_view_cell * c_curr = view.cells;
-    llama_seq_id * cs_curr = view.cells_sequences;
-
-    for (int i = 0; i < view.n_cells; i++, c_curr++, cs_curr += view.n_max_seq) {
-        for (int j = 0; j < view.n_max_seq; j++) {
-            if (cs_curr[j] < 0) { continue; }
-            if (seqs.find(cs_curr[j]) == seqs.end()) {
-                if (seqs.size() + 1 >= sizeof(slot_chars)) { break; }
-                seqs[cs_curr[j]] = seqs.size();
-            }
-        }
-        if (seqs.size() + 1 >= sizeof(slot_chars)) { break; }
-    }
-
-    printf("=== Sequence legend: ");
-    for (const auto & it : seqs) {
-        printf("%zu=%d, ", it.second, it.first);
-    }
-    printf("'+'=other sequence ids");
-
-    c_curr = view.cells;
-    cs_curr = view.cells_sequences;
-    for (int i = 0; i < view.n_cells; i++, c_curr++, cs_curr += view.n_max_seq) {
-        if (i % row_size == 0) {
-            printf("\n%5d: ", i);
-        }
-        for (int j = 0; j < view.n_max_seq; j++) {
-            if (cs_curr[j] >= 0) {
-                const auto & it = seqs.find(cs_curr[j]);
-                putchar(it != seqs.end() ? int(slot_chars[it->second]) : '+');
-            } else {
-                putchar('.');
-            }
-        }
-        putchar(' ');
-    }
-
-    printf("\n=== Done dumping\n");
-}

@@ -57,6 +57,7 @@ struct gpt_params {
     int32_t n_sequences                     = 1;     // number of sequences to decode
     float   p_accept                        = 0.5f;  // speculative decoding accept probability
     float   p_split                         = 0.1f;  // speculative decoding split probability
+    float   p_recovery                      = 0.0f;  // Cumulative probability that p_accept and p_split are increased by per-iteration.
     int32_t n_gpu_layers                    = -1;    // number of layers to store in VRAM (-1 - use default)
     int32_t n_gpu_layers_draft              = -1;    // number of layers to store in VRAM for the draft model (-1 - use default)
     int32_t main_gpu                        = 0;     // the GPU that is used for scratch and small tensors
@@ -228,5 +229,4 @@ void dump_non_result_info_yaml(
 // Dump the KV cache view with the number of sequences per cell.
 void dump_kv_cache_view(const llama_kv_cache_view & view, int row_size = 80);
 
-// Dump the KV cache view showing individual sequences in each cell (long output).
-void dump_kv_cache_view_seqs(const llama_kv_cache_view & view, int row_size = 40);
+

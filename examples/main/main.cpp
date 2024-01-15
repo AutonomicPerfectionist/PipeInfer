@@ -242,6 +242,13 @@ int main(int argc, char ** argv) {
             params.prompt = "<|im_start|>system\n" + params.prompt + "<|im_end|>";
         }
         embd_inp = ::llama_tokenize(ctx, params.prompt, add_bos, true);
+        llama_batch batch = llama_batch_init(n_ctx, 0, 1);
+
+        for (int i = 0; i < embd_inp.size()-1; i++) {
+            llama_batch_add(batch, embd_inp[i], i, {0}, true);
+
+        }
+        llama_decode(ctx, batch);
     } else {
         LOG("use session tokens\n");
         embd_inp = session_tokens;
@@ -597,7 +604,11 @@ int main(int argc, char ** argv) {
 
                 LOG("eval: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd).c_str());
 
-                if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) {
+                llama_batch batch = llama_batch_init(n_eval, 0, 1);
+                for (int j = 0; j < n_eval; j++) {
+                    llama_batch_add(batch, embd[i+j], n_past+j, {0}, true);
+                }
+                if (llama_decode(ctx, batch)) {
                     LOG_TEE("%s : failed to eval\n", __func__);
                     return 1;
                 }

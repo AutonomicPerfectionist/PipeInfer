@@ -5734,7 +5734,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 #ifdef GGML_USE_MPI
         if (ggml_mpi_size(lctx.ctx_mpi) > 1 && ggml_mpi_rank(lctx.ctx_mpi) == 0) {
             // TODO print logits array for comparison
-            ggml_mpi_recv_float_array(lctx.ctx_mpi, logits_out.data(), n_vocab * n_tokens, ggml_mpi_size(lctx.ctx_mpi) - 1, GGML_MPI_SYNC_LOGITS);
+            ggml_mpi_recv_float_array(lctx.ctx_mpi, logits_out.data(), (batch.logits || lctx.logits_all) ? n_vocab * n_tokens : n_vocab, ggml_mpi_size(lctx.ctx_mpi) - 1, GGML_MPI_SYNC_LOGITS);
 //            printf("\nReceived %zu logits, logits_out.size = %zu\n", n_vocab * n_tokens, logits_out.size());
 //            printf("batch: %s\n", LOG_BATCH_TOSTR_PRETTY(&lctx, batch).c_str());
 //            for (auto logit : logits_out) {
@@ -5759,20 +5759,19 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         // TODO: do not compute and extract logits if only embeddings are needed
         //       need to update the graphs to skip "result_output"
         {
-            memcpy(logits_out.data(), net_output, sizeof(float)*n_vocab*n_tokens);
 
-//            if (batch.logits) {
-//                for (uint32_t i = 0; i < n_tokens; i++) {
-//                    if (batch.logits[i] == 0) {
-//                        continue;
-//                    }
-//                    memcpy(logits_out.data() + (n_vocab*i),  net_output + (n_vocab*i), sizeof(float)*n_vocab);
-//                }
-//            } else if (lctx.logits_all) {
-//                memcpy(logits_out.data(), net_output, sizeof(float)*n_vocab*n_tokens);
-//            } else {
-//                memcpy(logits_out.data(), net_output + (n_vocab*(n_tokens - 1)), sizeof(float)*n_vocab);
-//            }
+            if (batch.logits) {
+                for (uint32_t i = 0; i < n_tokens; i++) {
+                    if (batch.logits[i] == 0) {
+                        continue;
+                    }
+                    memcpy(logits_out.data() + (n_vocab*i),  net_output + (n_vocab*i), sizeof(float)*n_vocab);
+                }
+            } else if (lctx.logits_all) {
+                memcpy(logits_out.data(), net_output, sizeof(float)*n_vocab*n_tokens);
+            } else {
+                memcpy(logits_out.data(), net_output + (n_vocab*(n_tokens - 1)), sizeof(float)*n_vocab);
+            }
         }
 
         // extract embeddings
@@ -5787,7 +5786,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         }
         if (ggml_mpi_size(lctx.ctx_mpi) > 1 && ggml_mpi_rank(lctx.ctx_mpi) == ggml_mpi_size(lctx.ctx_mpi) - 1) {
 //            printf("\nSent %zu logits, logits_out.size = %zu\nbatch: %s\n", n_vocab * n_tokens, logits_out.size(), LOG_BATCH_TOSTR_PRETTY(&lctx, batch).c_str());
-            ggml_mpi_send_float_array_async(lctx.ctx_mpi, logits_out.data(), n_vocab * n_tokens, 0, GGML_MPI_SYNC_LOGITS);
+            ggml_mpi_send_float_array_async(lctx.ctx_mpi, logits_out.data(), (batch.logits || lctx.logits_all) ? n_vocab * n_tokens : n_vocab, 0, GGML_MPI_SYNC_LOGITS);
 //            llama_kv_cache_view view = llama_kv_cache_view_init(&lctx, 21);
 //            llama_kv_cache_view_update(&lctx, &view);
 //            printf("Cache view:\n%s\n", dump_kv_cache_view_seqs(view, 1).c_str());

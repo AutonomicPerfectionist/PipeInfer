@@ -5463,6 +5463,10 @@ static struct ggml_cgraph * llama_decode_internal_phased(
             llama_batch  & batch,
             uint8_t phase,
             ggml_cgraph * cgraph) {
+    if (ggml_mpi_rank(lctx.ctx_mpi) < 0) {
+        return nullptr;
+    }
+
     if (phase == 0) {
         if (ggml_mpi_rank(lctx.ctx_mpi) == 0 && ggml_mpi_size(lctx.ctx_mpi) > 1) {
             int transaction_type = GGML_MPI_DECODE;
@@ -5471,6 +5475,8 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         ggml_mpi_sync_ints_pipelined(lctx.ctx_mpi, &batch.batch_id, 1, GGML_MPI_BATCH_ID);
 
         ggml_mpi_sync_ints_pipelined(lctx.ctx_mpi, &batch.n_tokens, 1, GGML_MPI_N_TOKENS);
+
+        ggml_mpi_sync_ints_pipelined(lctx.ctx_mpi, &batch.max_n_seq, 1, GGML_MPI_MAX_N_SEQ);
     }
     uint32_t n_tokens = batch.n_tokens;
     if (n_tokens == 0) {
@@ -5487,7 +5493,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
     GGML_ASSERT(n_tokens <= n_batch);
 
     int n_threads = n_tokens == 1 ? cparams.n_threads : cparams.n_threads_batch;
-    GGML_ASSERT((!batch.token && batch.embd) || (batch.token && !batch.embd)); // NOLINT
+
 
     const int64_t t_start_us = ggml_time_us();
 
@@ -5523,7 +5529,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         seq_id_arr.resize(n_tokens);
         for (uint32_t i = 0; i < n_tokens; i++) {
             n_seq_id[i] = 1;
-            seq_id[i].resize(1);
+            seq_id[i].resize(batch.max_n_seq);
             seq_id[i][0] = batch.all_seq_id;
             seq_id_arr[i] = seq_id[i].data();
         }
@@ -5548,6 +5554,8 @@ static struct ggml_cgraph * llama_decode_internal_phased(
         }
         n_tokens = batch.n_tokens;
 #endif
+
+        GGML_ASSERT((!batch.token && batch.embd) || (batch.token && !batch.embd)); // NOLINT
         if (!llama_kv_cache_find_slot(kv_self, batch)) {
             printf("Cannot find cache slot\n");
             return nullptr;
@@ -9837,12 +9845,12 @@ struct llama_batch llama_batch_get_one(
         /*all_pos_0      =*/ pos_0,
         /*all_pos_1      =*/ 1,
         /*all_seq_id     =*/ seq_id,
-        0
+        0, 1
     };
 }
 
 struct llama_batch llama_batch_init(int32_t n_tokens, int32_t embd, int32_t n_seq_max) {
-    llama_batch batch = { 0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, 0,};
+    llama_batch batch = { 0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, 0, n_seq_max};
 
     if (embd) {
         batch.embd = (float *) malloc(sizeof(float) * n_tokens * embd);
@@ -9861,7 +9869,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens, int32_t embd, int32_t n_se
     return batch;
 }
 
-void llama_batch_free(struct llama_batch batch) {
+void llama_batch_free(struct llama_batch & batch) {
     if (batch.token)    free(batch.token);
     if (batch.embd)     free(batch.embd);
     if (batch.pos)      free(batch.pos);
@@ -9873,6 +9881,13 @@ void llama_batch_free(struct llama_batch batch) {
         free(batch.seq_id);
     }
     if (batch.logits)   free(batch.logits);
+
+    batch.token = nullptr;
+    batch.embd = nullptr;
+    batch.pos = nullptr;
+    batch.n_seq_id = nullptr;
+    batch.seq_id = nullptr;
+    batch.logits = nullptr;
 }
 
 #ifdef GGML_USE_MPI
@@ -9887,6 +9902,7 @@ int llama_process_mpi_transaction(
 
     switch (tag) {
         case GGML_MPI_DECODE:
+//            llama_batch_free(batch);
             return llama_decode_internal(*ctx, batch);
             break;
         case GGML_MPI_KV_CLEAR:

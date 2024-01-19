@@ -49,6 +49,10 @@ extern "C" {
 
 #define GGML_MPI_BEGIN_TRANSACTION 18
 
+#define GGML_MPI_MAX_N_SEQ 19
+
+#define GGML_MPI_BATCH_LOGITS 20
+
 /**
  * The context used for MPI operations,
  * a program may make use of more than one

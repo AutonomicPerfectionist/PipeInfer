@@ -158,6 +158,7 @@ extern "C" {
         llama_pos    all_pos_1;  // used if pos == NULL
         llama_seq_id all_seq_id; // used if seq_id == NULL
         int32_t      batch_id;
+        int32_t max_n_seq;
     } llama_batch;
 
     struct llama_model_params {
@@ -581,7 +582,7 @@ LLAMA_API void llama_kv_cache_seq_cp_sync_bi(
             int32_t n_seq_max);
 
     // Frees a batch of tokens allocated with llama_batch_init()
-    LLAMA_API void llama_batch_free(struct llama_batch batch);
+    LLAMA_API void llama_batch_free(struct llama_batch & batch);
 
     // Positive return values does not mean a fatal error, but rather a warning.
     //   0 - success

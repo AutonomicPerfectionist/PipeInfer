@@ -299,6 +299,12 @@ int main(int argc, char ** argv) {
     int spec_past_tgt = n_past_tgt;
     int spec_past_dft = n_past_dft;
 
+    long ttft = ggml_time_us();
+    std::vector<uint64_t > inter_token_times;
+    int64_t itt_start;
+    bool first_token = false;
+    bool has_run_first_token = false;
+
     bool first_run = true;
     llama_token id;
     while (true) {
@@ -456,6 +462,18 @@ int main(int argc, char ** argv) {
                 if (current_run.speculative) {
                     n_accept++;
                 }
+
+                if (has_run_first_token) {
+                    if (first_token) {
+                        ttft = ggml_time_us() - ttft;
+                        LOG("\nTTFT: %ld\n", ttft);
+                        first_token = false;
+                    } else {
+                        inter_token_times.push_back(ggml_time_us() - itt_start);
+                    }
+
+                    itt_start = ggml_time_us();
+                }
                 llama_sampling_accept(ctx_sampling, ctx_tgt, id, true);
 
                 // Root of WORLD
@@ -607,6 +625,12 @@ int main(int argc, char ** argv) {
         begin_non_spec_run(params, n_seq_dft, ctx_dft, max_seq, drafts, id, batch_id, n_past_dft, n_past_dft, dft_cgraphs,
                            kvc_view_dft);
 
+        if (!has_run_first_token) {
+
+            has_run_first_token = true;
+            first_token = true;
+        }
+
         seq_async_run dft_run = dft_cgraphs.back();
         dft_cgraphs.pop_back();
         llama_finish_async_decode(*ctx_dft, dft_run.batch, dft_run.cgraph);
@@ -648,11 +672,21 @@ int main(int argc, char ** argv) {
 
     auto t_dec_end = ggml_time_us();
 
+    uint64_t avg_itt = 0;
+    for (auto latency : inter_token_times) {
+        avg_itt += latency;
+    }
+
+    avg_itt = avg_itt / inter_token_times.size();
+
     LOG_TEE("\n\n");
 
     LOG_TEE("encoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_input,   (t_enc_end - t_enc_start) / 1e6f, inp.size() / ((t_enc_end - t_enc_start) / 1e6f));
     LOG_TEE("decoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_predict, (t_dec_end - t_dec_start) / 1e6f, n_predict  / ((t_dec_end - t_dec_start) / 1e6f));
-
+    LOG_TEE("Average inter-token latency: %f seconds\n", avg_itt / 1e6f);
+    LOG_TEE("Time-to-first-token: %f seconds\n", ttft / 1e6f);
+    
+    
     LOG_TEE("\n");
     LOG_TEE("n_draft   = %d\n", n_draft);
     LOG_TEE("n_predict = %d\n", n_predict);
@@ -671,7 +705,17 @@ int main(int argc, char ** argv) {
         llama_sampling_free(drafts[s].ctx_sampling);
     }
 
-    llama_batch_free(batch_dft);
+    if (llama_node_id(ctx_tgt) == 0) {
+        for (size_t i = tgt_cgraphs.size() - 1; i >= 0; i--) {
+            const auto &run = tgt_cgraphs[i];
+            llama_finish_async_decode(*ctx_tgt, run.batch, run.cgraph);
+        }
+    }
+
+    for (size_t i = dft_cgraphs.size()-1; i >= 0; i--) {
+        const auto& run = dft_cgraphs[i];
+        llama_finish_async_decode(*ctx_dft, run.batch, run.cgraph);
+    }
 
     llama_free(ctx_tgt);
     llama_free_model(model_tgt);
@@ -851,10 +895,6 @@ bool start_async_spec_run(const gpt_params &params, llama_context *ctx_tgt, llam
 //        LOG("Draft KV cache view:\n%s\n", dump_kv_cache_view_seqs(kvc, 1).c_str());
     }
 
-
-    if (n_predict > params.n_predict || has_eos) {
-                return true;
-    }
 
     llama_sampling_cp(ctx_sampling, drafts[0].ctx_sampling);
 
@@ -1078,7 +1118,9 @@ bool start_async_spec_run(const gpt_params &params, llama_context *ctx_tgt, llam
             //drafts[s].tokens.erase(drafts[s].tokens.begin());
         }
 
-
+        if (first_run) {
+            ++n_drafted;
+        }
 
         begin_async_run(params.sparams, params.n_parallel, ctx_tgt, max_seq, n_past_dft, drafts, tgt_cgraphs,
                         batch_id, spec_past_tgt, kvc, true, batch_tgt, spec_past_tgt + drafts[0].tokens.size(), prefix_n_past, current_run.seq_offset);

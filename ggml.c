@@ -362,13 +362,13 @@ int64_t ggml_time_us(void) {
 void ggml_time_init(void) {}
 int64_t ggml_time_ms(void) {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     return (int64_t)ts.tv_sec*1000 + (int64_t)ts.tv_nsec/1000000;
 }
 
 int64_t ggml_time_us(void) {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     return (int64_t)ts.tv_sec*1000000 + (int64_t)ts.tv_nsec/1000;
 }
 #endif

@@ -235,7 +235,7 @@ int main(int argc, char ** argv) {
     LOG("add_bos: %d\n", add_bos);
 
     std::vector<llama_token> embd_inp;
-
+    int n_past             = 0;
     if (params.interactive_first || params.instruct || params.chatml || !params.prompt.empty() || session_tokens.empty()) {
         LOG("tokenize the prompt\n");
         if (params.chatml) {
@@ -249,6 +249,10 @@ int main(int argc, char ** argv) {
 
         }
         llama_decode(ctx, batch);
+        llama_token last = embd_inp.back();
+        n_past = embd_inp.size()-2;
+        embd_inp.clear();
+        embd_inp.push_back(last);
     } else {
         LOG("use session tokens\n");
         embd_inp = session_tokens;
@@ -465,7 +469,7 @@ int main(int argc, char ** argv) {
     bool input_echo           = true;
     bool need_to_save_session = !path_session.empty() && n_matching_session_tokens < embd_inp.size();
 
-    int n_past             = 0;
+
     int n_remain           = params.n_predict;
     int n_consumed         = 0;
     int n_session_consumed = 0;

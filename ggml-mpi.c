@@ -108,7 +108,7 @@ void ggml_mpi_free(struct ggml_mpi_context * ctx) {
 
     ggml_mpi_sync_pipelined(ctx, NULL, 0, MPI_INT8_T, GGML_MPI_SHUTDOWN);
     int buffer_size = 128*1024*1024;
-    MPI_Buffer_detach(ctx->send_buffer, &buffer_size);
+    MPI_Buffer_detach(&ctx->send_buffer, &buffer_size);
     MPI_Comm_free(&(ctx->comm));
     free(ctx);
 }
@@ -253,7 +253,44 @@ bool ggml_mpi_eval_init(
 
 
     ggml_mpi_sync_pipelined(ctx_mpi, n_tokens, 1, MPI_INT, GGML_MPI_N_TOKENS);
+    int8_t* temp_logits = (int8_t*) calloc(*n_tokens, sizeof(int8_t));
 
+    if (ctx_mpi->rank == 0 && *logits != NULL) {
+        ggml_mpi_sync_pipelined(ctx_mpi, *logits, *n_tokens, MPI_INT8_T, GGML_MPI_BATCH_LOGITS);
+    } else {
+        ggml_mpi_sync_pipelined(ctx_mpi, temp_logits, *n_tokens, MPI_INT8_T, GGML_MPI_BATCH_LOGITS);
+    }
+
+
+
+
+
+
+
+    if (ctx_mpi->rank != 0) {
+        bool should_set_batch_logits = false;
+        for (int i = 0; i < *n_tokens; i++) {
+            if (temp_logits[i]) {
+                should_set_batch_logits = true;
+                break;
+            }
+        }
+        if (should_set_batch_logits) {
+            if (*logits != NULL) {
+                free(*logits);
+                *logits = NULL;
+            }
+            *logits = temp_logits;
+        } else {
+            if (*logits != NULL) {
+                free(*logits);
+                *logits = NULL;
+            }
+            free(temp_logits);
+        }
+    } else {
+        free(temp_logits);
+    }
 
     // For now, we assume that the pos, seq_ids, tokens, etc have been
     // pre-allocated for the largest possible sizes, even on worker nodes.

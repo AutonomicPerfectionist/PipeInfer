@@ -487,6 +487,12 @@ int main(int argc, char ** argv) {
 
     struct llama_sampling_context * ctx_sampling = llama_sampling_init(sparams);
 
+    long ttft = ggml_time_ms();
+    std::vector<uint64_t > inter_token_times;
+    int64_t itt_start;
+    bool first_token = false;
+    bool has_run_first_token = false;
+
     while ((n_remain != 0 && !is_antiprompt) || params.interactive) {
         // predict
         if (!embd.empty()) {
@@ -640,6 +646,18 @@ int main(int argc, char ** argv) {
                 LOG("saved session to %s\n", path_session.c_str());
             }
 
+            if (has_run_first_token) {
+                if (first_token) {
+                    ttft = ggml_time_ms() - ttft;
+                    LOG("\nTTFT: %ld\n", ttft);
+                    first_token = false;
+                } else {
+                    inter_token_times.push_back(ggml_time_ms() - itt_start);
+                }
+
+                itt_start = ggml_time_ms();
+            }
+
             const llama_token id = llama_sampling_sample(ctx_sampling, ctx, ctx_guidance);
 
             llama_sampling_accept(ctx_sampling, ctx, id, true);
@@ -655,6 +673,13 @@ int main(int argc, char ** argv) {
             --n_remain;
 
             LOG("n_remain: %d\n", n_remain);
+
+            if (!has_run_first_token && (int) embd_inp.size() <= n_consumed) {
+
+                has_run_first_token = true;
+                first_token = true;
+                ttft = ggml_time_ms();
+            }
         } else {
             // some user input remains from prompt or interaction, forward it to processing
             LOG("embd_inp.size(): %d, n_consumed: %d\n", (int) embd_inp.size(), n_consumed);
@@ -866,6 +891,16 @@ int main(int argc, char ** argv) {
 
     llama_print_timings(ctx);
     write_logfile(ctx, params, model, input_tokens, output_ss.str(), output_tokens);
+
+    uint64_t avg_itt = 0;
+    for (auto latency : inter_token_times) {
+        avg_itt += latency;
+    }
+
+    avg_itt = avg_itt / inter_token_times.size();
+
+    LOG_TEE("Average inter-token latency: %ld microseconds\n", avg_itt);
+    LOG_TEE("Time-to-first-token: %ld microseconds\n", ttft);
 
     if (ctx_guidance) { llama_free(ctx_guidance); }
     llama_free(ctx);

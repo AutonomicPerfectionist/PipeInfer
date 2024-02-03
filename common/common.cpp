@@ -448,12 +448,18 @@ bool gpt_params_parse_ex(int argc, char ** argv, gpt_params & params) {
                 break;
             }
             params.p_split = std::stof(argv[i]);
-        }else if (arg == "--p-recovery" || arg == "-pr") {
+        } else if (arg == "--p-recovery" || arg == "-pr") {
             if (++i >= argc) {
                 invalid_param = true;
                 break;
             }
             params.p_recovery = std::stof(argv[i]);
+        } else if (arg == "--p-decay" || arg == "-pd") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.p_decay = std::stof(argv[i]);
         } else if (arg == "-m" || arg == "--model") {
             if (++i >= argc) {
                 invalid_param = true;
@@ -860,7 +866,8 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     printf("  -ns N, --sequences N  number of sequences to decode (default: %d)\n", params.n_sequences);
     printf("  -pa N, --p-accept N   speculative decoding accept probability (default: %.1f)\n", (double)params.p_accept);
     printf("  -ps N, --p-split N    speculative decoding split probability (default: %.1f)\n", (double)params.p_split);
-    printf("  -pr N, --p-recovery N PipeInfer recovery probability (default: %.1f)\n", (double)params.p_recovery);
+    printf("  -pr N, --p-recovery N PipeInfer probability recovery (default: %.1f)\n", (double)params.p_recovery);
+    printf("  -pd N, --p-decay N PipeInfer probability decay (default: %.1f)\n", (double)params.p_decay);
     printf("  -cb, --cont-batching  enable continuous batching (a.k.a dynamic batching) (default: disabled)\n");
     printf("  --mmproj MMPROJ_FILE  path to a multimodal projector file for LLaVA. see examples/llava/README.md\n");
     printf("  --image IMAGE_FILE    path to an image file. use with multimodal models\n");

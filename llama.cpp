@@ -5480,7 +5480,7 @@ static struct ggml_cgraph * llama_decode_internal_phased(
     }
     uint32_t n_tokens = batch.n_tokens;
     if (n_tokens == 0) {
-        LLAMA_LOG_ERROR("%s: n_tokens == 0", __func__);
+        LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
         return nullptr;
     }
 
@@ -5490,6 +5490,9 @@ static struct ggml_cgraph * llama_decode_internal_phased(
 
     const auto n_batch = cparams.n_batch;
 
+    if (n_tokens > n_batch) {
+        LLAMA_LOG_ERROR("%s: n_tokens (%d) > n_batch (%d)\n", __func__, n_tokens, n_batch);
+    }
     GGML_ASSERT(n_tokens <= n_batch);
 
     int n_threads = n_tokens == 1 ? cparams.n_threads : cparams.n_threads_batch;

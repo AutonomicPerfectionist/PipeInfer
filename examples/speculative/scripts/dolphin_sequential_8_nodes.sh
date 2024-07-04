@@ -2,6 +2,7 @@ pushd .
 
 export BIN_PATH="/var/llama.cpp/" # Replace with a path that each node can access containing the compiled code. This does not need to be on networked storage
 export SHARED_STORAGE="/mnt/cluster" # Replace with the path that each node can access where model files are stored. Recommend this to be on networked storage.
+# shellcheck disable=SC2164
 cd $BIN_PATH
 mpirun  -hostfile $SHARED_STORAGE/hostsfile --report-bindings -mca orte_keep_fqdn_hostnames t --bind-to none \
     $BIN_PATH/bin/main \
@@ -15,4 +16,5 @@ mpirun  -hostfile $SHARED_STORAGE/hostsfile --report-bindings -mca orte_keep_fqd
     --repeat-last-n 0 \
     -c 1024 \
     --numa
+# shellcheck disable=SC2164
 popd

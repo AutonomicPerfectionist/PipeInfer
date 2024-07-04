@@ -7,6 +7,7 @@
 #include <vector>
 #include <deque>
 #include <stdint.h>
+#include <fstream>
 
 
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  100
@@ -688,24 +689,48 @@ int main(int argc, char ** argv) {
 
     LOG_TEE("\n\n");
 
-    LOG_TEE("encoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_input,   (t_enc_end - t_enc_start) / 1e6f, inp.size() / ((t_enc_end - t_enc_start) / 1e6f));
-    LOG_TEE("decoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_predict, (t_dec_end - t_dec_start) / 1e6f, n_predict  / ((t_dec_end - t_dec_start) / 1e6f));
-    LOG_TEE("Average inter-token latency: %f seconds\n", avg_itt / 1e6f);
-    LOG_TEE("Time-to-first-token: %f seconds\n", ttft / 1e6f);
-    
-    
+    llama_swap_comm(ctx_tgt);
+    if (llama_node_id(ctx_tgt) == 0) {
+        std::ofstream results;
+        results.open("results.csv", std::ios_base::app);
+        double encode_speed = (double)inp.size() / ((double)(t_enc_end - t_enc_start) / 1e6f);
+        double decode_speed = (double)n_predict / ((double)(t_dec_end - t_dec_start) / 1e6f);
+        double itt = (double)avg_itt / 1e6f;
+        double final_ttft = (double)ttft / 1e6f;
+        results << encode_speed << ',' << decode_speed << ',' << itt << ',' << final_ttft << '\n';
+        LOG_TEE("OVERALL SYSTEM MEASUREMENTS:\n");
+        LOG_TEE("encoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_input, (t_enc_end - t_enc_start) / 1e6f,
+                encode_speed);
+        LOG_TEE("decoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_predict, (t_dec_end - t_dec_start) / 1e6f,
+                decode_speed);
+        LOG_TEE("Average inter-token latency: %f seconds\n", itt);
+        LOG_TEE("Time-to-first-token: %f seconds\n", final_ttft);
+        results.close();
+
+    }
     LOG_TEE("\n");
+    const auto *header = (llama_node_id(ctx_tgt) == 0) ? "TARGET PIPELINE MEASUREMENTS\n" : "DRAFT PIPELINE MEASUREMENTS\n";
+    LOG_TEE("%s", header);
     LOG_TEE("n_draft   = %d\n", n_draft);
     LOG_TEE("n_predict = %d\n", n_predict);
     LOG_TEE("n_drafted = %d\n", n_drafted);
     LOG_TEE("n_accept  = %d\n", n_accept);
     LOG_TEE("accept    = %.3f%%\n", 100.0f * n_accept / n_drafted);
 
-    LOG_TEE("\ndraft:\n");
-    llama_print_timings(ctx_dft);
+    if (llama_node_id(ctx_tgt) != 0) {
 
-    LOG_TEE("\ntarget:\n");
-    llama_print_timings(ctx_tgt);
+        LOG_TEE("\ndraft:\n");
+        llama_print_timings(ctx_dft);
+    }
+
+    if (llama_node_id(ctx_tgt) == 0) {
+
+        LOG_TEE("\ntarget:\n");
+        llama_print_timings(ctx_tgt);
+    }
+
+    llama_swap_comm(ctx_tgt);
+
 
     llama_sampling_free(ctx_sampling);
     for (int s = 0; s < n_seq_dft; ++s) {
@@ -713,13 +738,13 @@ int main(int argc, char ** argv) {
     }
 
     if (llama_node_id(ctx_tgt) == 0) {
-        for (size_t i = tgt_cgraphs.size() - 1; i >= 0; i--) {
+        for (int i = tgt_cgraphs.size() - 1; i >= 0; i--) {
             const auto &run = tgt_cgraphs[i];
             llama_finish_async_decode(*ctx_tgt, run.batch, run.cgraph);
         }
     }
 
-    for (size_t i = dft_cgraphs.size()-1; i >= 0; i--) {
+    for (int i = dft_cgraphs.size()-1; i >= 0; i--) {
         const auto& run = dft_cgraphs[i];
         llama_finish_async_decode(*ctx_dft, run.batch, run.cgraph);
     }

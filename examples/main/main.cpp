@@ -474,6 +474,7 @@ int main(int argc, char ** argv) {
     int n_consumed         = 0;
     int n_session_consumed = 0;
     int n_past_guidance    = 0;
+    bool has_started = false;
 
     std::vector<int>   input_tokens;  g_input_tokens  = &input_tokens;
     std::vector<int>   output_tokens; g_output_tokens = &output_tokens;
@@ -899,8 +900,22 @@ int main(int argc, char ** argv) {
 
     avg_itt = avg_itt / inter_token_times.size();
 
-    LOG_TEE("Average inter-token latency: %ld microseconds\n", avg_itt);
-    LOG_TEE("Time-to-first-token: %ld microseconds\n", ttft);
+    std::ofstream results;
+    auto timings = llama_get_timings(ctx);
+    results.open("results.csv", std::ios_base::app);
+    double itt = (double)avg_itt / 1e3f;
+    double final_ttft = (double)ttft / 1e3f;
+    auto encode_speed = 1e3 / timings.t_p_eval_ms * timings.n_p_eval;
+    auto decode_speed = 1 / itt;
+    results << encode_speed << ',' << decode_speed << ',' << itt << ',' << final_ttft << '\n';
+    LOG_TEE("OVERALL SYSTEM MEASUREMENTS:\n");
+    LOG_TEE("encoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", timings.n_p_eval, timings.t_p_eval_ms/1000.0,
+            encode_speed);
+    LOG_TEE("decoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", timings.n_eval, timings.t_eval_ms/1000.0,
+            decode_speed);
+    LOG_TEE("Average inter-token latency: %f seconds\n", itt);
+    LOG_TEE("Time-to-first-token: %f seconds\n", final_ttft);
+    results.close();
 
     if (ctx_guidance) { llama_free(ctx_guidance); }
     llama_free(ctx);

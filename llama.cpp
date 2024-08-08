@@ -9334,8 +9334,12 @@ void llama_kv_cache_seq_cp_back(struct llama_context * ctx, llama_seq_id seq_id_
 
 void llama_kv_cache_seq_keep(struct llama_context * ctx, llama_seq_id seq_id) {
 #ifdef GGML_USE_MPI
+    if (ggml_mpi_rank(ctx->ctx_mpi) == 0 && ggml_mpi_size(ctx->ctx_mpi) > 1) {
+        int transaction_type = GGML_MPI_KV_SEQ_KEEP;
+        ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, &transaction_type, 1, GGML_MPI_BEGIN_TRANSACTION);
+    }
     int32_t vals[1] = {seq_id};
-    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 1, 4);
+    ggml_mpi_sync_ints_pipelined(ctx->ctx_mpi, vals, 1, GGML_MPI_KV_SEQ_KEEP);
     seq_id = vals[0];
 #endif
     llama_kv_cache_seq_keep(ctx->kv_self, seq_id);
@@ -9927,7 +9931,7 @@ int llama_process_mpi_transaction(
             llama_kv_cache_seq_shift(ctx, 0, 0, 0, 0);
             break;
         default:
-            printf("Unknown operation, exiting\n");
+            printf("Unknown operation %d, exiting\n", tag);
             exit(1);
             break;
     }
@@ -9965,7 +9969,7 @@ int llama_process_mpi_worker(
             }
             break;
         default:
-            printf("Unknown operation, exiting\n");
+            printf("Unknown non-transaction operation %d, exiting\n", tag);
             exit(1);
             break;
     }
